@@ -29,6 +29,9 @@ describe('Category Standards & Offline Fallback Classifier', () => {
     expect(fallbackClassifyCategory('Cloudflare Workers 배포 오류 수정')).toBe('개발');
     expect(fallbackClassifyCategory('자동차 엔진오일 교체 및 세차')).toBe('차량');
     expect(fallbackClassifyCategory('강아지 심장사상충 약 먹이기')).toBe('반려동물');
+    expect(fallbackClassifyCategory('강아지 예방접종 예약')).toBe('반려동물');
+    expect(fallbackClassifyCategory('고양이 예방접종 예약')).toBe('반려동물');
+    expect(fallbackClassifyCategory('독감 예방접종 예약')).toBe('건강');
     expect(fallbackClassifyCategory('주민센터에서 등본 발급받기')).toBe('행정');
 
     // Learns from previous categorized todos

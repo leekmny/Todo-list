@@ -14,6 +14,7 @@ import {
 import { EncryptedDesktopVault, validateCloudUrl, type KeyProtector } from './vault';
 
 const LOCAL_APP_ORIGIN = 'app://private-todo';
+const DESKTOP_PARTITION = 'persist:private-todo';
 const LOCAL_CSP = [
   "default-src 'self' app:",
   "script-src 'self' app:",
@@ -89,10 +90,10 @@ function isAllowedNavigationUrl(rawUrl: string): boolean {
   }
 }
 
-function registerLocalProtocol(): void {
+function registerLocalProtocol(desktopSession: Electron.Session): void {
   const distDir = getClientDistDir();
 
-  protocol.handle('app', async (request) => {
+  desktopSession.protocol.handle('app', async (request) => {
     const url = new URL(request.url);
     if (url.hostname !== 'private-todo') {
       return new Response('Forbidden', { status: 403 });
@@ -193,7 +194,7 @@ function createWindow(): void {
       webSecurity: true,
       allowRunningInsecureContent: false,
       webviewTag: false,
-      partition: 'persist:private-todo',
+      partition: DESKTOP_PARTITION,
     },
   });
 
@@ -409,15 +410,16 @@ if (!gotSingleLock) {
   });
 
   app.whenReady().then(() => {
+    const desktopSession = session.fromPartition(DESKTOP_PARTITION);
     // Deny dangerous browser hardware permissions across both default and persistent sessions
-    for (const ses of [session.defaultSession, session.fromPartition('persist:private-todo')]) {
+    for (const ses of [session.defaultSession, desktopSession]) {
       ses.setPermissionRequestHandler((_webContents, _permission, callback) => {
         callback(false);
       });
     }
 
     vault = new EncryptedDesktopVault(path.join(app.getPath('userData'), 'vault'), createOsKeyProtector());
-    registerLocalProtocol();
+    registerLocalProtocol(desktopSession);
     registerIpcHandlers();
     buildAppMenu();
     createWindow();
