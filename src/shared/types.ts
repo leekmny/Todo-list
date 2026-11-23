@@ -16,6 +16,7 @@ export interface TodoItem {
   priority: TodoPriority;
   category: string;
   dueDate: string | null;
+  reminderAt: string | null;
   pinned: boolean;
   subtasks: SubtaskItem[];
   recurrence: TodoRecurrence;
@@ -33,6 +34,7 @@ export interface CreateTodoInput {
   priority?: TodoPriority;
   category?: string;
   dueDate?: string | null;
+  reminderAt?: string | null;
   pinned?: boolean;
   subtasks?: SubtaskItem[];
   recurrence?: TodoRecurrence;
@@ -46,6 +48,7 @@ export interface UpdateTodoInput {
   priority?: TodoPriority;
   category?: string;
   dueDate?: string | null;
+  reminderAt?: string | null;
   pinned?: boolean;
   subtasks?: SubtaskItem[];
   recurrence?: TodoRecurrence;

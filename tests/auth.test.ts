@@ -134,13 +134,14 @@ describe('multi-user email auth, sliding sessions & quick parser', () => {
 
   it('parses natural-language quick todo tokens cleanly', () => {
     const base = new Date(2026, 10, 23, 12, 0, 0); // 2026-11-23
-    const parsed = parseQuickTodoInput('운동하기 매일 #건강 내일 !높음 *고정', base);
+    const parsed = parseQuickTodoInput('운동하기 매일 #건강 내일 @21:30 !높음 *고정', base);
     expect(parsed).toEqual({
       title: '운동하기',
       category: '건강',
       priority: 'high',
       recurrence: 'daily',
       dueDate: '2026-11-24',
+      reminderAt: '2026-11-24T21:30',
       pinned: true,
     });
 
@@ -150,6 +151,7 @@ describe('multi-user email auth, sliding sessions & quick parser', () => {
       category: '재무',
       priority: 'low',
       dueDate: '2026-12-15',
+      reminderAt: undefined,
       recurrence: undefined,
       pinned: undefined,
     });

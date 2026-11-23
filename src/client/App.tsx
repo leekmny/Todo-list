@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import {
   ArrowUpDown,
   CalendarDays,
+  Check,
   CheckCheck,
   Columns3,
   List,
   Menu,
   Search,
   Sparkles,
+  Timer,
   X,
 } from 'lucide-react';
 import type {
@@ -31,8 +33,10 @@ import {
   logoutSession,
   reorderTodosApi,
   switchDesktopToLocalApi,
+  triggerNativeNotification,
   updateTodoApi,
 } from './api';
+import { AlarmBanner } from './components/AlarmBanner';
 import { CalendarView } from './components/CalendarView';
 import { DesktopSecurityModal } from './components/DesktopSecurityModal';
 import { KanbanBoard } from './components/KanbanBoard';
@@ -55,9 +59,10 @@ interface ToastMessage {
 const PRIORITY_WEIGHT = { high: 3, medium: 2, low: 1 } as const;
 
 const VIEW_TITLES: Record<SmartView, { title: string; subtitle: string }> = {
-  all: { title: '전체 할 일', subtitle: '모든 개인 일정과 메모를 한눈에 관리합니다.' },
+  all: { title: '전체 할 일', subtitle: '모든 일정과 메모를 한눈에 관리합니다.' },
+  in_progress: { title: '진행 중', subtitle: '지금 집중해서 진행 중인 작업 목록입니다.' },
   today: { title: '오늘 집중', subtitle: '오늘 마감이거나 고정된 핵심 작업입니다.' },
-  active: { title: '진행 중', subtitle: '아직 완료하지 않은 할 일 목록입니다.' },
+  active: { title: '미완료', subtitle: '아직 완료하지 않은 할 일 목록입니다.' },
   important: { title: '중요 / 고정', subtitle: '상단 고정 또는 높은 우선순위 작업입니다.' },
   done: { title: '완료됨', subtitle: '마무리한 기록입니다.' },
 };
@@ -68,6 +73,41 @@ function getTodayDateString(): string {
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function getCurrentLocalDateTimeKey(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+function playAlarmTone() {
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    [587.33, 783.99, 1046.5].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.001, now + idx * 0.16);
+      gain.gain.exponentialRampToValueAtTime(0.14, now + idx * 0.16 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.16 + 0.42);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.16);
+      osc.stop(now + idx * 0.16 + 0.45);
+    });
+  } catch {
+    // Audio playback blocked by autoplay policy
+  }
 }
 
 export function App() {
@@ -91,6 +131,17 @@ export function App() {
   const [focusTodoId, setFocusTodoId] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+
+  // Alarm state
+  const [ringingAlarms, setRingingAlarms] = useState<TodoModel[]>([]);
+  const notifiedKeysRef = useRef<Set<string>>(new Set());
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | 'unsupported' | 'desktop'
+  >(() => {
+    if (isDesktopApp()) return 'desktop';
+    if (typeof Notification === 'undefined') return 'unsupported';
+    return Notification.permission;
+  });
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = window.localStorage.getItem('private-todo-theme');
@@ -158,6 +209,42 @@ export function App() {
     void refreshAuth();
   }, [refreshAuth]);
 
+  // Live reminder polling loop (checks every 10s for due alarms)
+  useEffect(() => {
+    if (!auth?.authenticated) return;
+
+    function checkDueAlarms() {
+      const nowKey = getCurrentLocalDateTimeKey();
+      const newlyDue: TodoModel[] = [];
+
+      for (const item of todos) {
+        if (item.status === 'done' || !item.reminderAt) continue;
+        if (item.reminderAt <= nowKey) {
+          const alarmKey = `${item.id}@${item.reminderAt}`;
+          if (!notifiedKeysRef.current.has(alarmKey)) {
+            notifiedKeysRef.current.add(alarmKey);
+            newlyDue.push(item);
+          }
+        }
+      }
+
+      if (newlyDue.length > 0) {
+        playAlarmTone();
+        setRingingAlarms((prev) => {
+          const existingIds = new Set(prev.map((t) => t.id));
+          return [...prev, ...newlyDue.filter((t) => !existingIds.has(t.id))];
+        });
+        for (const item of newlyDue) {
+          void triggerNativeNotification('Private Todo 알람', item.title);
+        }
+      }
+    }
+
+    checkDueAlarms();
+    const interval = window.setInterval(checkDueAlarms, 10_000);
+    return () => window.clearInterval(interval);
+  }, [auth?.authenticated, todos]);
+
   useEffect(() => {
     if (!auth?.authenticated) return;
     function handleShortcut(event: KeyboardEvent) {
@@ -198,6 +285,7 @@ export function App() {
   }, [auth?.authenticated, editingTodo]);
 
   const counts = useMemo<Record<SmartView, number>>(() => {
+    let inProgress = 0;
     let today = 0;
     let active = 0;
     let important = 0;
@@ -208,6 +296,9 @@ export function App() {
         done += 1;
       } else {
         active += 1;
+        if (item.status === 'in_progress') {
+          inProgress += 1;
+        }
         if (item.pinned || (item.dueDate && item.dueDate <= todayStr)) {
           today += 1;
         }
@@ -219,12 +310,23 @@ export function App() {
 
     return {
       all: todos.length,
+      in_progress: inProgress,
       today,
       active,
       important,
       done,
     };
   }, [todos, todayStr]);
+
+  const inProgressTodos = useMemo(
+    () => todos.filter((item) => item.status === 'in_progress'),
+    [todos]
+  );
+
+  const upcomingAlarmCount = useMemo(
+    () => todos.filter((item) => item.status !== 'done' && Boolean(item.reminderAt)).length,
+    [todos]
+  );
 
   const totalFocusMinutes = useMemo(
     () => todos.reduce((sum, item) => sum + (item.focusMinutes ?? 0), 0),
@@ -249,7 +351,9 @@ export function App() {
       if (selectedCategory) {
         if (item.category !== selectedCategory) return false;
       } else if (displayMode === 'list') {
-        if (activeView === 'today') {
+        if (activeView === 'in_progress') {
+          if (item.status !== 'in_progress') return false;
+        } else if (activeView === 'today') {
           if (item.status === 'done') return false;
           const isDueOrOverdue = Boolean(item.dueDate && item.dueDate <= todayStr);
           if (!item.pinned && !isDueOrOverdue) return false;
@@ -304,11 +408,33 @@ export function App() {
     [focusTodoId, todos]
   );
 
+  async function handleRequestNotificationPermission() {
+    if (isDesktopApp()) {
+      showToast('데스크톱 OS 알람이 자동으로 활성화되어 있습니다.');
+      return;
+    }
+    if (typeof Notification === 'undefined') {
+      showToast('이 브라우저는 시스템 알림을 지원하지 않습니다. (화면 내 알람은 계속 동작합니다)');
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      showToast('브라우저 알람이 이미 켜져 있습니다.');
+      return;
+    }
+    const result = await Notification.requestPermission();
+    setNotificationPermission(result);
+    if (result === 'granted') {
+      showToast('브라우저 알람을 켰습니다! 예약 시각에 알림을 보내드립니다.');
+    } else {
+      showToast('브라우저 알림이 거부되었지만, 앱 화면 내 알람과 소리 알림은 계속 동작합니다.');
+    }
+  }
+
   async function handleCreateTodo(input: CreateTodoInput) {
     try {
       const created = await createTodoApi(input);
       setTodos((prev) => [created, ...prev]);
-      showToast('할 일을 추가했습니다.');
+      showToast(created.reminderAt ? '할 일과 알람을 추가했습니다.' : '할 일을 추가했습니다.');
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setAuth((prev) => (prev ? { ...prev, authenticated: false, authMethod: null } : prev));
@@ -326,6 +452,9 @@ export function App() {
           const replaced = prev.map((item) => (item.id === id ? updated : item));
           return nextItem ? [nextItem, ...replaced] : replaced;
         });
+        if (updated.status === 'done') {
+          setRingingAlarms((prev) => prev.filter((a) => a.id !== id));
+        }
         if (nextItem) {
           showToast(`다음 반복 일정(${nextItem.dueDate ?? '예정'})이 자동 생성되었습니다.`);
         }
@@ -345,6 +474,16 @@ export function App() {
     void handleUpdateTodo(todo.id, { status: nextStatus });
   }
 
+  function handleToggleInProgress(todo: TodoModel) {
+    const nextStatus: TodoStatus = todo.status === 'in_progress' ? 'todo' : 'in_progress';
+    void handleUpdateTodo(todo.id, { status: nextStatus });
+    showToast(
+      nextStatus === 'in_progress'
+        ? `"${todo.title}" 진행 중으로 표시했습니다.`
+        : `"${todo.title}" 진행 중을 해제했습니다.`
+    );
+  }
+
   function handleCycleStatus(todo: TodoModel) {
     const order: TodoStatus[] = ['todo', 'in_progress', 'done'];
     const next = order[(order.indexOf(todo.status) + 1) % order.length];
@@ -362,6 +501,21 @@ export function App() {
   function handleStartFocus(todo: TodoModel) {
     setFocusTodoId(todo.id);
     setPomoOpen(true);
+    if (todo.status === 'todo') {
+      void handleUpdateTodo(todo.id, { status: 'in_progress' });
+    }
+  }
+
+  function handleSnoozeAlarm(todo: TodoModel, minutes: number) {
+    const nextReminderAt = getCurrentLocalDateTimeKey(new Date(Date.now() + minutes * 60 * 1000));
+    setRingingAlarms((prev) => prev.filter((item) => item.id !== todo.id));
+    void handleUpdateTodo(todo.id, { reminderAt: nextReminderAt });
+    showToast(`${minutes}분 뒤(${nextReminderAt.slice(11)})에 다시 알려드릴게요.`);
+  }
+
+  function handleDismissAlarm(todo: TodoModel) {
+    setRingingAlarms((prev) => prev.filter((item) => item.id !== todo.id));
+    void handleUpdateTodo(todo.id, { reminderAt: null });
   }
 
   const handleCompleteFocusSession = useCallback(
@@ -403,7 +557,9 @@ export function App() {
 
     const orderMap = new Map(reordered.map((id, idx) => [id, idx + 1]));
     setTodos((prev) =>
-      prev.map((item) => (orderMap.has(item.id) ? { ...item, sortOrder: orderMap.get(item.id)! } : item))
+      prev.map((item) =>
+        orderMap.has(item.id) ? { ...item, sortOrder: orderMap.get(item.id)! } : item
+      )
     );
     setDraggingId(null);
     setDragOverId(null);
@@ -417,6 +573,7 @@ export function App() {
 
   async function handleDeleteTodo(todo: TodoModel) {
     setTodos((prev) => prev.filter((item) => item.id !== todo.id));
+    setRingingAlarms((prev) => prev.filter((item) => item.id !== todo.id));
     if (focusTodoId === todo.id) setFocusTodoId(null);
     try {
       await deleteTodoApi(todo.id);
@@ -427,6 +584,7 @@ export function App() {
         priority: todo.priority,
         category: todo.category,
         dueDate: todo.dueDate,
+        reminderAt: todo.reminderAt,
         pinned: todo.pinned,
         subtasks: todo.subtasks,
         recurrence: todo.recurrence,
@@ -460,6 +618,7 @@ export function App() {
         priority: item.priority,
         category: item.category,
         dueDate: item.dueDate,
+        reminderAt: item.reminderAt,
         pinned: item.pinned,
         subtasks: item.subtasks,
         recurrence: item.recurrence,
@@ -500,6 +659,7 @@ export function App() {
       setTodos([]);
       setEditingTodo(null);
       setPomoOpen(false);
+      setRingingAlarms([]);
       setAuth((prev) => (prev ? { ...prev, authenticated: false, authMethod: null } : prev));
     }
   }
@@ -530,7 +690,7 @@ export function App() {
     : displayMode === 'kanban'
       ? { title: '칸반 보드', subtitle: '카드를 드래그해서 진행 상태를 바로 옮길 수 있습니다.' }
       : displayMode === 'calendar'
-        ? { title: '일정 캘린더', subtitle: '마감일 기준으로 월별 일정을 한눈에 확인합니다.' }
+        ? { title: '월간 캘린더', subtitle: '마감일 기준으로 월별 일정을 한눈에 확인합니다.' }
         : VIEW_TITLES[activeView];
 
   const canDragReorder = displayMode === 'list' && sortMode === 'default' && !searchQuery.trim();
@@ -539,8 +699,11 @@ export function App() {
     <div className="app-layout">
       <Sidebar
         activeView={activeView}
+        displayMode={displayMode}
         selectedCategory={selectedCategory}
         counts={counts}
+        upcomingAlarmCount={upcomingAlarmCount}
+        notificationPermission={notificationPermission}
         totalCount={todos.length}
         doneCount={counts.done}
         totalFocusMinutes={totalFocusMinutes}
@@ -557,7 +720,12 @@ export function App() {
           setActiveView(view);
           setDisplayMode('list');
         }}
+        onOpenCalendar={() => {
+          setSelectedCategory(null);
+          setDisplayMode('calendar');
+        }}
         onSelectCategory={setSelectedCategory}
+        onRequestNotificationPermission={() => void handleRequestNotificationPermission()}
         onOpenPomodoro={() => setPomoOpen((prev) => !prev)}
         onOpenShortcuts={() => setShowShortcuts(true)}
         onOpenDesktopSecurity={() => setShowDesktopSecurity(true)}
@@ -673,6 +841,44 @@ export function App() {
           </div>
         </header>
 
+        {inProgressTodos.length > 0 && displayMode === 'list' && activeView !== 'done' && (
+          <section className="in-progress-banner" aria-label="현재 진행 중인 작업">
+            <div className="in-progress-banner-header">
+              <span className="live-dot" />
+              <strong>지금 진행 중 ({inProgressTodos.length})</strong>
+            </div>
+            <div className="in-progress-chips">
+              {inProgressTodos.map((item) => (
+                <div key={item.id} className="in-progress-pill">
+                  <button
+                    type="button"
+                    className="in-progress-pill-title"
+                    onClick={() => setEditingTodo(item)}
+                  >
+                    {item.title}
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => handleStartFocus(item)}
+                    title="뽀모도로 집중"
+                  >
+                    <Timer size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => handleToggleDone(item)}
+                    title="완료 처리"
+                  >
+                    <Check size={13} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         <TodoComposer
           inputRef={composerRef}
           existingCategories={categories.map((c) => c.name)}
@@ -731,6 +937,7 @@ export function App() {
                       setDragOverId(null);
                     }}
                     onToggleDone={handleToggleDone}
+                    onToggleInProgress={handleToggleInProgress}
                     onCycleStatus={handleCycleStatus}
                     onTogglePin={handleTogglePin}
                     onUpdateSubtasks={handleUpdateSubtasks}
@@ -744,6 +951,20 @@ export function App() {
           </section>
         )}
       </main>
+
+      <AlarmBanner
+        todos={ringingAlarms}
+        onComplete={(todo) => {
+          setRingingAlarms((prev) => prev.filter((item) => item.id !== todo.id));
+          void handleUpdateTodo(todo.id, { status: 'done', reminderAt: null });
+        }}
+        onStartProgress={(todo) => {
+          setRingingAlarms((prev) => prev.filter((item) => item.id !== todo.id));
+          void handleUpdateTodo(todo.id, { status: 'in_progress', reminderAt: null });
+        }}
+        onSnooze={handleSnoozeAlarm}
+        onDismiss={handleDismissAlarm}
+      />
 
       {pomoOpen && (
         <PomodoroWidget
@@ -833,6 +1054,10 @@ export function App() {
                 <li>
                   <span>마감일 자동 지정</span>
                   <code>오늘 / 내일 / 모레 / 다음주 / 2026-12-01</code>
+                </li>
+                <li>
+                  <span>알람 시각 자동 지정</span>
+                  <code>@09:00 / @21:30</code>
                 </li>
                 <li>
                   <span>반복 일정 설정</span>

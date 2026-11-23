@@ -14,6 +14,7 @@ interface DesktopBridge {
   disablePasscode: (currentPasscode: string) => Promise<{ ok: boolean; error?: string }>;
   connectCloudServer: (url: string) => Promise<{ ok: boolean; error?: string }>;
   switchToLocalVault: () => Promise<void>;
+  notify?: (title: string, body: string) => Promise<void>;
   listTodos: () => Promise<TodoItem[]>;
   createTodo: (input: CreateTodoInput) => Promise<TodoItem>;
   updateTodo: (id: string, patch: UpdateTodoInput) => Promise<{ item: TodoItem; nextItem: TodoItem | null }>;
@@ -121,6 +122,16 @@ export async function connectDesktopCloudApi(url: string): Promise<void> {
 
 export async function switchDesktopToLocalApi(): Promise<void> {
   await window.privateTodoDesktop?.switchToLocalVault();
+}
+
+export async function triggerNativeNotification(title: string, body: string): Promise<void> {
+  if (window.privateTodoDesktop?.notify) {
+    await window.privateTodoDesktop.notify(title, body);
+    return;
+  }
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    new Notification(title, { body });
+  }
 }
 
 export function requestEmailOtp(

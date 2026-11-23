@@ -932,9 +932,182 @@ select {
   border-left: 3px solid var(--accent);
 }
 
+.todo-item.is-in-progress {
+  border-color: rgba(139, 124, 248, 0.48);
+  background: linear-gradient(90deg, var(--accent-soft), var(--bg-elevated) 38%);
+}
+
 .todo-item.is-focusing {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+@keyframes pulseDot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.75);
+  }
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  display: inline-block;
+  flex-shrink: 0;
+  animation: pulseDot 1.6s ease-in-out infinite;
+}
+
+.live-dot-sm {
+  width: 6px;
+  height: 6px;
+  box-shadow: none;
+}
+
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(139, 124, 248, 0.35);
+  flex-shrink: 0;
+}
+
+.icon-btn.is-live-active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.in-progress-banner {
+  background: var(--bg-elevated);
+  border: 1px solid rgba(139, 124, 248, 0.35);
+  border-radius: 13px;
+  padding: 11px 14px;
+  margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.in-progress-banner-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--accent);
+}
+
+.in-progress-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.in-progress-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 10px;
+  border-radius: 9px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  max-width: 100%;
+}
+
+.in-progress-pill-title {
+  border: none;
+  background: transparent;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reminder-badge {
+  color: var(--warning);
+  background: var(--warning-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.alarm-stack {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 70;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+}
+
+.alarm-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.alarm-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.alarm-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.alarm-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--warning-soft);
+  color: var(--warning);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.alarm-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.alarm-todo-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-top: 2px;
+  line-height: 1.35;
+}
+
+.alarm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .todo-item.is-drag-over {

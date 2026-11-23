@@ -1,11 +1,14 @@
 import { useState, type DragEvent, type FormEvent } from 'react';
 import {
+  Bell,
   Calendar,
   Check,
   GripVertical,
   ListChecks,
+  Pause,
   Pencil,
   Pin,
+  Play,
   Plus,
   Repeat,
   Tag,
@@ -31,6 +34,7 @@ interface TodoItemProps {
   onDrop?: (id: string) => void;
   onDragEnd?: () => void;
   onToggleDone: (todo: TodoModel) => void;
+  onToggleInProgress: (todo: TodoModel) => void;
   onCycleStatus: (todo: TodoModel) => void;
   onTogglePin: (todo: TodoModel) => void;
   onUpdateSubtasks: (todo: TodoModel, subtasks: SubtaskItem[]) => void;
@@ -58,6 +62,10 @@ const RECURRENCE_LABELS: Record<TodoRecurrence, string> = {
   monthly: '매월',
 };
 
+function formatReminderShort(reminderAt: string): string {
+  return reminderAt.replace('T', ' ').slice(5);
+}
+
 export function TodoItem({
   todo,
   todayStr,
@@ -69,6 +77,7 @@ export function TodoItem({
   onDrop,
   onDragEnd,
   onToggleDone,
+  onToggleInProgress,
   onCycleStatus,
   onTogglePin,
   onUpdateSubtasks,
@@ -80,6 +89,7 @@ export function TodoItem({
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
 
   const isDone = todo.status === 'done';
+  const isInProgress = todo.status === 'in_progress';
   const isOverdue = Boolean(todo.dueDate && !isDone && todo.dueDate < todayStr);
   const isDueToday = Boolean(todo.dueDate && !isDone && todo.dueDate === todayStr);
   const subtasks = todo.subtasks ?? [];
@@ -109,9 +119,9 @@ export function TodoItem({
 
   return (
     <article
-      className={`todo-item ${isDone ? 'is-done' : ''} ${todo.pinned ? 'is-pinned' : ''} ${
-        isDragOver ? 'is-drag-over' : ''
-      } ${isFocusing ? 'is-focusing' : ''}`}
+      className={`todo-item ${isDone ? 'is-done' : ''} ${isInProgress ? 'is-in-progress' : ''} ${
+        todo.pinned ? 'is-pinned' : ''
+      } ${isDragOver ? 'is-drag-over' : ''} ${isFocusing ? 'is-focusing' : ''}`}
       draggable={draggable}
       onDragStart={() => onDragStart?.(todo.id)}
       onDragOver={(e) => onDragOver?.(e, todo.id)}
@@ -135,6 +145,12 @@ export function TodoItem({
 
       <div className="todo-body">
         <div className="todo-title-row" onDoubleClick={() => onEdit(todo)}>
+          {isInProgress && (
+            <span className="live-badge" title="현재 진행 중인 작업">
+              <span className="live-dot" />
+              진행 중
+            </span>
+          )}
           <span className="todo-title">{todo.title}</span>
           {todo.pinned && (
             <span className="pin-indicator" title="상단 고정됨">
@@ -154,8 +170,9 @@ export function TodoItem({
             type="button"
             className={`meta-badge status-badge status-${todo.status}`}
             onClick={() => onCycleStatus(todo)}
-            title="클릭하여 상태 변경"
+            title="클릭하여 상태 변경 (할 일 → 진행 중 → 완료)"
           >
+            {isInProgress && <span className="live-dot live-dot-sm" />}
             {STATUS_LABELS[todo.status]}
           </button>
 
@@ -178,6 +195,13 @@ export function TodoItem({
             >
               <Calendar size={11} />
               {isOverdue ? `지남 · ${todo.dueDate}` : isDueToday ? '오늘 마감' : todo.dueDate}
+            </span>
+          )}
+
+          {todo.reminderAt && !isDone && (
+            <span className="meta-badge reminder-badge" title={`알람 예약: ${todo.reminderAt}`}>
+              <Bell size={11} />
+              {formatReminderShort(todo.reminderAt)}
             </span>
           )}
 
@@ -254,6 +278,17 @@ export function TodoItem({
       </div>
 
       <div className="todo-actions">
+        {!isDone && (
+          <button
+            type="button"
+            className={`icon-btn ${isInProgress ? 'is-live-active' : ''}`}
+            onClick={() => onToggleInProgress(todo)}
+            title={isInProgress ? '진행 중 해제 (할 일로)' : '진행 중으로 표시'}
+            aria-label={isInProgress ? '진행 중 해제' : '진행 중으로 표시'}
+          >
+            {isInProgress ? <Pause size={15} /> : <Play size={15} />}
+          </button>
+        )}
         <button
           type="button"
           className={`icon-btn ${showSubtasks ? 'is-highlighted' : ''}`}
@@ -287,7 +322,7 @@ export function TodoItem({
           type="button"
           className="icon-btn"
           onClick={() => onEdit(todo)}
-          title="편집"
+          title="편집 / 알람 설정"
           aria-label="편집"
         >
           <Pencil size={15} />

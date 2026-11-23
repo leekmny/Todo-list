@@ -24,6 +24,7 @@ export interface ValidationError {
 export type Validated<T> = ValidationResult<T> | ValidationError;
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_DATETIME_LOCAL_RE = /^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):([0-5]\d)$/;
 
 function isValidCalendarDate(value: string): boolean {
   if (!ISO_DATE_RE.test(value)) return false;
@@ -34,6 +35,11 @@ function isValidCalendarDate(value: string): boolean {
     date.getUTCMonth() === m - 1 &&
     date.getUTCDate() === d
   );
+}
+
+function isValidReminderAt(value: string): boolean {
+  if (!ISO_DATETIME_LOCAL_RE.test(value)) return false;
+  return isValidCalendarDate(value.slice(0, 10));
 }
 
 function isStatus(value: unknown): value is TodoStatus {
@@ -149,6 +155,14 @@ export function validateCreateTodo(body: unknown): Validated<CreateTodoInput> {
     dueDate = raw.dueDate.trim();
   }
 
+  let reminderAt: string | null = null;
+  if (raw.reminderAt !== undefined && raw.reminderAt !== null && raw.reminderAt !== '') {
+    if (typeof raw.reminderAt !== 'string' || !isValidReminderAt(raw.reminderAt.trim())) {
+      return { ok: false, error: '알람 시각은 YYYY-MM-DDTHH:mm 형식이어야 합니다.' };
+    }
+    reminderAt = raw.reminderAt.trim();
+  }
+
   let pinned = false;
   if (raw.pinned !== undefined) {
     if (typeof raw.pinned !== 'boolean') {
@@ -187,7 +201,19 @@ export function validateCreateTodo(body: unknown): Validated<CreateTodoInput> {
 
   return {
     ok: true,
-    data: { title, notes, status, priority, category, dueDate, pinned, subtasks, recurrence, focusMinutes },
+    data: {
+      title,
+      notes,
+      status,
+      priority,
+      category,
+      dueDate,
+      reminderAt,
+      pinned,
+      subtasks,
+      recurrence,
+      focusMinutes,
+    },
   };
 }
 
@@ -259,6 +285,16 @@ export function validateUpdateTodo(body: unknown): Validated<UpdateTodoInput> {
       patch.dueDate = raw.dueDate.trim();
     } else {
       return { ok: false, error: '마감일은 YYYY-MM-DD 형식이어야 합니다.' };
+    }
+  }
+
+  if (raw.reminderAt !== undefined) {
+    if (raw.reminderAt === null || raw.reminderAt === '') {
+      patch.reminderAt = null;
+    } else if (typeof raw.reminderAt === 'string' && isValidReminderAt(raw.reminderAt.trim())) {
+      patch.reminderAt = raw.reminderAt.trim();
+    } else {
+      return { ok: false, error: '알람 시각은 YYYY-MM-DDTHH:mm 형식이어야 합니다.' };
     }
   }
 

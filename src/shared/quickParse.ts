@@ -5,6 +5,7 @@ export interface ParsedQuickTodo {
   priority?: TodoPriority;
   category?: string;
   dueDate?: string;
+  reminderAt?: string;
   recurrence?: TodoRecurrence;
   pinned?: boolean;
 }
@@ -42,11 +43,19 @@ export function parseQuickTodoInput(rawInput: string, now = new Date()): ParsedQ
   let priority: TodoPriority | undefined;
   let category: string | undefined;
   let dueDate: string | undefined;
+  let reminderTime: string | undefined;
   let recurrence: TodoRecurrence | undefined;
   let pinned: boolean | undefined;
 
   for (const token of tokens) {
     const lower = token.toLowerCase();
+
+    // Reminder time: @09:30 or @21:00
+    if (!reminderTime && /^@([01]?\d|2[0-3]):([0-5]\d)$/.test(token)) {
+      const match = token.match(/^@(\d{1,2}):(\d{2})$/)!;
+      reminderTime = `${match[1].padStart(2, '0')}:${match[2]}`;
+      continue;
+    }
 
     // Category: #태그
     if (!category && token.startsWith('#') && token.length > 1) {
@@ -123,11 +132,14 @@ export function parseQuickTodoInput(rawInput: string, now = new Date()): ParsedQ
     dueDate = addDays(now, 0);
   }
 
+  const reminderAt = reminderTime ? `${dueDate ?? addDays(now, 0)}T${reminderTime}` : undefined;
+
   return {
     title: titleParts.join(' ').trim() || rawInput.trim(),
     priority,
     category,
     dueDate,
+    reminderAt,
     recurrence,
     pinned,
   };

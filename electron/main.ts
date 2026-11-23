@@ -5,6 +5,7 @@ import {
   BrowserWindow,
   ipcMain,
   Menu,
+  Notification,
   protocol,
   safeStorage,
   session,
@@ -304,6 +305,20 @@ function registerIpcHandlers(): void {
     if (mainWindow) {
       await mainWindow.loadURL(`${LOCAL_APP_ORIGIN}/`);
     }
+  });
+
+  ipcMain.handle('app:notify', (_event, rawTitle: unknown, rawBody: unknown) => {
+    if (!Notification.isSupported()) return;
+    const title = typeof rawTitle === 'string' ? rawTitle.slice(0, 120) : 'Private Todo 알람';
+    const body = typeof rawBody === 'string' ? rawBody.slice(0, 240) : '';
+    const notification = new Notification({ title, body });
+    notification.on('click', () => {
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+      }
+    });
+    notification.show();
   });
 
   ipcMain.handle('todos:list', (event) => {

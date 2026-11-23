@@ -13,6 +13,7 @@ export interface PrivateTodoDesktopBridge {
   disablePasscode: (currentPasscode: string) => Promise<{ ok: boolean; error?: string }>;
   connectCloudServer: (url: string) => Promise<{ ok: boolean; error?: string }>;
   switchToLocalVault: () => Promise<void>;
+  notify: (title: string, body: string) => Promise<void>;
   listTodos: () => Promise<TodoItem[]>;
   createTodo: (input: CreateTodoInput) => Promise<TodoItem>;
   updateTodo: (id: string, patch: UpdateTodoInput) => Promise<{ item: TodoItem; nextItem: TodoItem | null }>;
@@ -31,6 +32,7 @@ const api: PrivateTodoDesktopBridge = {
   disablePasscode: (currentPasscode) => ipcRenderer.invoke('vault:disable-passcode', currentPasscode),
   connectCloudServer: (url) => ipcRenderer.invoke('app:connect-cloud', url),
   switchToLocalVault: () => ipcRenderer.invoke('app:switch-local'),
+  notify: (title, body) => ipcRenderer.invoke('app:notify', title, body),
   listTodos: () => ipcRenderer.invoke('todos:list'),
   createTodo: (input) => ipcRenderer.invoke('todos:create', input),
   updateTodo: (id, patch) => ipcRenderer.invoke('todos:update', id, patch),

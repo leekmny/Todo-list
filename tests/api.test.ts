@@ -11,6 +11,7 @@ interface StoredTodoRow {
   priority: string;
   category: string;
   due_date: string | null;
+  reminder_at: string | null;
   pinned: number;
   subtasks: string;
   recurrence: string;
@@ -57,6 +58,7 @@ function createMockD1(): D1Database {
         results: [
           { name: 'id' },
           { name: 'owner_email' },
+          { name: 'reminder_at' },
           { name: 'subtasks' },
           { name: 'recurrence' },
           { name: 'sort_order' },
@@ -153,6 +155,7 @@ function createMockD1(): D1Database {
         priority,
         category,
         due_date,
+        reminder_at,
         pinned,
         subtasks,
         recurrence,
@@ -169,6 +172,7 @@ function createMockD1(): D1Database {
         string,
         string,
         string,
+        string | null,
         string | null,
         number,
         string,
@@ -188,6 +192,7 @@ function createMockD1(): D1Database {
         priority,
         category,
         due_date,
+        reminder_at,
         pinned,
         subtasks,
         recurrence,
@@ -218,6 +223,7 @@ function createMockD1(): D1Database {
         priority,
         category,
         due_date,
+        reminder_at,
         pinned,
         subtasks,
         recurrence,
@@ -233,6 +239,7 @@ function createMockD1(): D1Database {
         string,
         string,
         string,
+        string | null,
         string | null,
         number,
         string,
@@ -256,6 +263,7 @@ function createMockD1(): D1Database {
         priority,
         category,
         due_date,
+        reminder_at,
         pinned,
         subtasks,
         recurrence,
@@ -472,6 +480,7 @@ describe('Private Todo Worker API (Hardened Multi-user + Power Features)', () =>
         body: JSON.stringify({
           title: '주간 리뷰',
           dueDate: '2026-11-23',
+          reminderAt: '2026-11-23T09:00',
           recurrence: 'weekly',
           subtasks: [
             { id: 's1', title: '진행상황 정리', done: true },
@@ -498,12 +507,19 @@ describe('Private Todo Worker API (Hardened Multi-user + Power Features)', () =>
     expect(doneRes.status).toBe(200);
     const doneBody = (await doneRes.json()) as {
       item: { status: string; recurrence: string; focusMinutes: number };
-      nextItem: { id: string; dueDate: string; recurrence: string; subtasks: Array<{ done: boolean }> } | null;
+      nextItem: {
+        id: string;
+        dueDate: string;
+        reminderAt: string | null;
+        recurrence: string;
+        subtasks: Array<{ done: boolean }>;
+      } | null;
     };
     expect(doneBody.item.status).toBe('done');
     expect(doneBody.item.focusMinutes).toBe(25);
     expect(doneBody.nextItem).toBeTruthy();
     expect(doneBody.nextItem!.dueDate).toBe('2026-11-30');
+    expect(doneBody.nextItem!.reminderAt).toBe('2026-11-30T09:00');
     expect(doneBody.nextItem!.recurrence).toBe('weekly');
     expect(doneBody.nextItem!.subtasks.every((s) => s.done === false)).toBe(true);
 

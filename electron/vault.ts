@@ -408,6 +408,7 @@ export class EncryptedDesktopVault {
       priority: input.priority ?? 'medium',
       category: input.category ?? '',
       dueDate: input.dueDate ?? null,
+      reminderAt: input.reminderAt ?? null,
       pinned: Boolean(input.pinned),
       subtasks: input.subtasks ?? [],
       recurrence: input.recurrence ?? 'none',
@@ -454,6 +455,7 @@ export class EncryptedDesktopVault {
       priority: patch.priority ?? existing.priority,
       category: patch.category ?? existing.category,
       dueDate: patch.dueDate !== undefined ? patch.dueDate : existing.dueDate,
+      reminderAt: patch.reminderAt !== undefined ? patch.reminderAt : existing.reminderAt ?? null,
       pinned: patch.pinned !== undefined ? patch.pinned : existing.pinned,
       subtasks: patch.subtasks ?? existing.subtasks,
       recurrence: storedRecurrence,
@@ -467,6 +469,8 @@ export class EncryptedDesktopVault {
     let nextItem: TodoItem | null = null;
     if (shouldSpawnRecurring) {
       const nextDueDate = computeNextRecurrenceDate(updated.dueDate, nextRecurrence);
+      const nextReminder =
+        updated.reminderAt && nextDueDate ? `${nextDueDate}${updated.reminderAt.slice(10)}` : null;
       nextItem = {
         id: crypto.randomUUID(),
         title: updated.title,
@@ -475,6 +479,7 @@ export class EncryptedDesktopVault {
         priority: updated.priority,
         category: updated.category,
         dueDate: nextDueDate,
+        reminderAt: nextReminder,
         pinned: updated.pinned,
         subtasks: updated.subtasks.map((s) => ({
           id: crypto.randomUUID(),
@@ -544,6 +549,7 @@ export class EncryptedDesktopVault {
         priority: input.priority ?? 'medium',
         category: input.category ?? '',
         dueDate: input.dueDate ?? null,
+        reminderAt: input.reminderAt ?? null,
         pinned: Boolean(input.pinned),
         subtasks: input.subtasks ?? [],
         recurrence: input.recurrence ?? 'none',

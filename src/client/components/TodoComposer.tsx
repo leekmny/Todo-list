@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent, type RefObject } from 'react';
-import { Calendar, ChevronDown, ChevronUp, Pin, Plus, Repeat, Sparkles, Tag } from 'lucide-react';
+import { Bell, Calendar, ChevronDown, ChevronUp, Pin, Plus, Repeat, Sparkles, Tag } from 'lucide-react';
 import { parseQuickTodoInput } from '../../shared/quickParse';
 import type { CreateTodoInput, TodoPriority, TodoRecurrence } from '../../shared/types';
 
@@ -26,6 +26,16 @@ function getLocalDateOffset(daysOffset: number): string {
   return `${year}-${month}-${day}`;
 }
 
+function getLocalDateTimeOffset(minutesOffset: number): string {
+  const date = new Date(Date.now() + minutesOffset * 60 * 1000);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
 export function TodoComposer({
   inputRef,
   existingCategories,
@@ -38,6 +48,7 @@ export function TodoComposer({
   const [priorityTouched, setPriorityTouched] = useState(false);
   const [category, setCategory] = useState(defaultCategory ?? '');
   const [dueDate, setDueDate] = useState('');
+  const [reminderAt, setReminderAt] = useState('');
   const [recurrence, setRecurrence] = useState<TodoRecurrence>('none');
   const [pinned, setPinned] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -47,7 +58,12 @@ export function TodoComposer({
     if (!title.trim()) return null;
     const parsed = parseQuickTodoInput(title);
     const hasTokens = Boolean(
-      parsed.category || parsed.priority || parsed.dueDate || parsed.recurrence || parsed.pinned
+      parsed.category ||
+        parsed.priority ||
+        parsed.dueDate ||
+        parsed.reminderAt ||
+        parsed.recurrence ||
+        parsed.pinned
     );
     return hasTokens ? parsed : null;
   }, [title]);
@@ -62,6 +78,7 @@ export function TodoComposer({
     const finalPriority = priorityTouched ? priority : parsed.priority ?? priority;
     const finalCategory = (category.trim() || parsed.category || defaultCategory || '').trim();
     const finalDueDate = dueDate || parsed.dueDate || null;
+    const finalReminderAt = reminderAt || parsed.reminderAt || null;
     const finalRecurrence = recurrence !== 'none' ? recurrence : parsed.recurrence ?? 'none';
     const finalPinned = pinned || Boolean(parsed.pinned);
 
@@ -73,6 +90,7 @@ export function TodoComposer({
         priority: finalPriority,
         category: finalCategory,
         dueDate: finalDueDate,
+        reminderAt: finalReminderAt,
         recurrence: finalRecurrence,
         pinned: finalPinned,
       });
@@ -81,6 +99,7 @@ export function TodoComposer({
       setPriority('medium');
       setPriorityTouched(false);
       setDueDate('');
+      setReminderAt('');
       setRecurrence('none');
       setPinned(false);
       if (!defaultCategory) {
@@ -100,7 +119,7 @@ export function TodoComposer({
           ref={inputRef}
           type="text"
           className="composer-input"
-          placeholder="할 일 입력... (예: 운동하기 매일 #건강 내일 !높음)"
+          placeholder="할 일 입력... (예: 운동하기 매일 #건강 내일 @21:00 !높음)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           maxLength={200}
@@ -135,6 +154,9 @@ export function TodoComposer({
             </span>
           )}
           {parsedPreview.dueDate && <span className="nlp-chip">마감 {parsedPreview.dueDate}</span>}
+          {parsedPreview.reminderAt && (
+            <span className="nlp-chip">알람 {parsedPreview.reminderAt.replace('T', ' ')}</span>
+          )}
           {parsedPreview.recurrence && (
             <span className="nlp-chip">{RECURRENCE_LABELS[parsedPreview.recurrence]} 반복</span>
           )}
@@ -194,6 +216,23 @@ export function TodoComposer({
                 onClick={() => setDueDate(getLocalDateOffset(1))}
               >
                 내일
+              </button>
+              <div className="inline-field">
+                <Bell size={13} />
+                <input
+                  type="datetime-local"
+                  className="inline-input"
+                  value={reminderAt}
+                  onChange={(e) => setReminderAt(e.target.value)}
+                  aria-label="알람 시각"
+                />
+              </div>
+              <button
+                type="button"
+                className="chip"
+                onClick={() => setReminderAt(getLocalDateTimeOffset(60))}
+              >
+                1시간 뒤 알람
               </button>
             </div>
 

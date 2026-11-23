@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Check, Pin, Plus, Timer, Trash2, X } from 'lucide-react';
+import { Bell, Check, Pin, Plus, Timer, Trash2, X } from 'lucide-react';
 import type {
   SubtaskItem,
   TodoItem,
@@ -17,6 +17,15 @@ interface TodoEditModalProps {
   onDelete: (todo: TodoItem) => Promise<void>;
 }
 
+function formatLocalDateTime(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
 export function TodoEditModal({
   todo,
   existingCategories,
@@ -30,6 +39,7 @@ export function TodoEditModal({
   const [priority, setPriority] = useState<TodoPriority>(todo.priority);
   const [category, setCategory] = useState(todo.category);
   const [dueDate, setDueDate] = useState(todo.dueDate ?? '');
+  const [reminderAt, setReminderAt] = useState(todo.reminderAt ?? '');
   const [recurrence, setRecurrence] = useState<TodoRecurrence>(todo.recurrence ?? 'none');
   const [pinned, setPinned] = useState(todo.pinned);
   const [subtasks, setSubtasks] = useState<SubtaskItem[]>(todo.subtasks ?? []);
@@ -67,6 +77,7 @@ export function TodoEditModal({
         priority,
         category: category.trim(),
         dueDate: dueDate || null,
+        reminderAt: reminderAt || null,
         recurrence,
         pinned,
         subtasks,
@@ -237,6 +248,64 @@ export function TodoEditModal({
                 <option value="weekly">매주</option>
                 <option value="monthly">매월</option>
               </select>
+            </div>
+
+            <div className="field field-span-2">
+              <label htmlFor="edit-reminder">
+                <Bell size={12} style={{ verticalAlign: '-1px', marginRight: 4 }} />
+                알람 예약
+              </label>
+              <input
+                id="edit-reminder"
+                type="datetime-local"
+                className="input"
+                value={reminderAt}
+                onChange={(e) => setReminderAt(e.target.value)}
+              />
+              <div className="control-group" style={{ marginTop: 4 }}>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={() => setReminderAt(formatLocalDateTime(new Date(Date.now() + 30 * 60 * 1000)))}
+                >
+                  30분 뒤
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={() => setReminderAt(formatLocalDateTime(new Date(Date.now() + 60 * 60 * 1000)))}
+                >
+                  1시간 뒤
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={() => {
+                    const d = new Date();
+                    d.setHours(21, 0, 0, 0);
+                    setReminderAt(formatLocalDateTime(d));
+                  }}
+                >
+                  오늘 21:00
+                </button>
+                <button
+                  type="button"
+                  className="chip"
+                  onClick={() => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + 1);
+                    d.setHours(9, 0, 0, 0);
+                    setReminderAt(formatLocalDateTime(d));
+                  }}
+                >
+                  내일 09:00
+                </button>
+                {reminderAt && (
+                  <button type="button" className="chip" onClick={() => setReminderAt('')}>
+                    알람 해제
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="field field-span-2">

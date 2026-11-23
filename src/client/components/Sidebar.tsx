@@ -1,5 +1,8 @@
 import { useRef, type ChangeEvent } from 'react';
 import {
+  Bell,
+  BellOff,
+  CalendarDays,
   CheckCircle2,
   Clock,
   Download,
@@ -9,6 +12,7 @@ import {
   LogOut,
   Mail,
   Moon,
+  PlayCircle,
   ShieldCheck,
   Star,
   Sun,
@@ -18,7 +22,7 @@ import {
   X,
 } from 'lucide-react';
 
-export type SmartView = 'all' | 'today' | 'active' | 'important' | 'done';
+export type SmartView = 'all' | 'today' | 'in_progress' | 'active' | 'important' | 'done';
 
 interface CategoryCount {
   name: string;
@@ -27,8 +31,11 @@ interface CategoryCount {
 
 interface SidebarProps {
   activeView: SmartView;
+  displayMode: 'list' | 'kanban' | 'calendar';
   selectedCategory: string | null;
   counts: Record<SmartView, number>;
+  upcomingAlarmCount: number;
+  notificationPermission: NotificationPermission | 'unsupported' | 'desktop';
   totalCount: number;
   doneCount: number;
   totalFocusMinutes: number;
@@ -42,7 +49,9 @@ interface SidebarProps {
   mobileOpen: boolean;
   onCloseMobile: () => void;
   onSelectView: (view: SmartView) => void;
+  onOpenCalendar: () => void;
   onSelectCategory: (category: string | null) => void;
+  onRequestNotificationPermission: () => void;
   onOpenPomodoro: () => void;
   onOpenShortcuts: () => void;
   onOpenDesktopSecurity?: () => void;
@@ -53,18 +62,22 @@ interface SidebarProps {
   onLockNow: () => void;
 }
 
-const NAV_ITEMS: { id: SmartView; label: string; icon: typeof Inbox }[] = [
+const NAV_ITEMS: { id: SmartView; label: string; icon: typeof Inbox; live?: boolean }[] = [
   { id: 'all', label: '전체', icon: Inbox },
+  { id: 'in_progress', label: '진행 중', icon: PlayCircle, live: true },
   { id: 'today', label: '오늘 집중', icon: Clock },
-  { id: 'active', label: '진행 중', icon: Inbox },
+  { id: 'active', label: '미완료', icon: Inbox },
   { id: 'important', label: '중요 / 고정', icon: Star },
   { id: 'done', label: '완료됨', icon: CheckCircle2 },
 ];
 
 export function Sidebar({
   activeView,
+  displayMode,
   selectedCategory,
   counts,
+  upcomingAlarmCount,
+  notificationPermission,
   totalCount,
   doneCount,
   totalFocusMinutes,
@@ -78,7 +91,9 @@ export function Sidebar({
   mobileOpen,
   onCloseMobile,
   onSelectView,
+  onOpenCalendar,
   onSelectCategory,
+  onRequestNotificationPermission,
   onOpenPomodoro,
   onOpenShortcuts,
   onOpenDesktopSecurity,
@@ -131,9 +146,13 @@ export function Sidebar({
               <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
             <div className="progress-meta">
+              <span>진행 중 {counts.in_progress}</span>
               <span>남음 {totalCount - doneCount}</span>
-              <span>완료 {doneCount}</span>
-              {totalFocusMinutes > 0 && <span>집중 {totalFocusMinutes}분</span>}
+              {totalFocusMinutes > 0 ? (
+                <span>집중 {totalFocusMinutes}분</span>
+              ) : (
+                <span>완료 {doneCount}</span>
+              )}
             </div>
           </div>
         </div>
@@ -143,7 +162,8 @@ export function Sidebar({
           <ul className="nav-list">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon;
-              const isActive = !selectedCategory && activeView === item.id;
+              const isActive =
+                displayMode === 'list' && !selectedCategory && activeView === item.id;
               return (
                 <li key={item.id}>
                   <button
@@ -155,17 +175,57 @@ export function Sidebar({
                       onCloseMobile();
                     }}
                   >
-                    <Icon size={16} />
+                    {item.live && counts.in_progress > 0 ? (
+                      <span className="live-dot" />
+                    ) : (
+                      <Icon size={16} />
+                    )}
                     <span className="nav-item-label">{item.label}</span>
                     <span className="nav-count">{counts[item.id]}</span>
                   </button>
                 </li>
               );
             })}
+            <li>
+              <button
+                type="button"
+                className={`nav-item ${displayMode === 'calendar' ? 'is-active' : ''}`}
+                onClick={() => {
+                  onOpenCalendar();
+                  onCloseMobile();
+                }}
+              >
+                <CalendarDays size={16} />
+                <span className="nav-item-label">월간 캘린더</span>
+                <span className="nav-count">3</span>
+              </button>
+            </li>
           </ul>
 
-          <div className="nav-section-label">도구</div>
+          <div className="nav-section-label">도구 · 알람</div>
           <ul className="nav-list">
+            <li>
+              <button
+                type="button"
+                className="nav-item"
+                onClick={() => {
+                  onRequestNotificationPermission();
+                  onCloseMobile();
+                }}
+              >
+                {notificationPermission === 'denied' ? <BellOff size={16} /> : <Bell size={16} />}
+                <span className="nav-item-label">
+                  {notificationPermission === 'desktop'
+                    ? 'OS 알람 켜짐'
+                    : notificationPermission === 'granted'
+                      ? '브라우저 알람 켜짐'
+                      : notificationPermission === 'denied'
+                        ? '알람 차단됨 (인앱 활성)'
+                        : '브라우저 알람 켜기'}
+                </span>
+                {upcomingAlarmCount > 0 && <span className="nav-count">{upcomingAlarmCount}</span>}
+              </button>
+            </li>
             <li>
               <button
                 type="button"
