@@ -8,7 +8,6 @@ import {
   List,
   Menu,
   Search,
-  Sparkles,
   Timer,
   X,
 } from 'lucide-react';
@@ -894,6 +893,7 @@ export function App() {
                 ref={searchRef}
                 type="text"
                 className="search-input"
+                aria-label="할 일 검색"
                 placeholder="검색 (/)"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -1011,11 +1011,11 @@ export function App() {
           <section className="todo-list-section" aria-label="할 일 목록">
             {filteredTodos.length === 0 ? (
               <div className="empty-state">
-                <Sparkles size={26} />
+                <h2>{searchQuery ? '검색 결과가 없습니다' : '표시할 할 일이 없습니다'}</h2>
                 <p>
                   {searchQuery
-                    ? `"${searchQuery}"에 해당하는 할 일이 없습니다.`
-                    : '표시할 할 일이 없습니다. 위 입력창에서 새 할 일을 추가해 보세요.'}
+                    ? <>“{searchQuery}”와 일치하는 할 일이 없습니다.</>
+                    : '할 일을 추가하면 이곳에서 관리할 수 있습니다.'}
                 </p>
               </div>
             ) : (
