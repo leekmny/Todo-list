@@ -2,6 +2,7 @@ export interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
   ALLOWED_EMAIL?: string;
+  ALLOWED_EMAILS?: string;
   SESSION_SECRET?: string;
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;

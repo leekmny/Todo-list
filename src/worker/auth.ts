@@ -105,6 +105,18 @@ export function isValidOtpFormat(code: string): boolean {
   return OTP_CODE_RE.test(code.trim());
 }
 
+export function getAllowedEmails(env: Env): string[] {
+  const combined = [env.ALLOWED_EMAILS ?? '', env.ALLOWED_EMAIL ?? ''].join(',');
+  const unique = new Set<string>();
+  for (const part of combined.split(/[\s,;]+/)) {
+    const normalized = normalizeEmail(part);
+    if (normalized && isValidEmailFormat(normalized)) {
+      unique.add(normalized);
+    }
+  }
+  return Array.from(unique);
+}
+
 export function isLocalhostUrl(requestUrl: string): boolean {
   try {
     const host = new URL(requestUrl).hostname;
@@ -123,7 +135,7 @@ export function isCfAccessEnabled(env: Env): boolean {
 }
 
 export function isEmailOtpConfigured(env: Env, requestUrl: string): boolean {
-  const hasAllowedEmail = Boolean(env.ALLOWED_EMAIL?.trim());
+  const hasAllowedEmail = getAllowedEmails(env).length > 0;
   const hasSessionSecret = Boolean(env.SESSION_SECRET?.trim());
   const hasMailSender =
     Boolean(env.RESEND_API_KEY?.trim()) ||
@@ -132,13 +144,21 @@ export function isEmailOtpConfigured(env: Env, requestUrl: string): boolean {
 }
 
 export async function isAllowedEmail(email: string, env: Env): Promise<boolean> {
-  const expected = env.ALLOWED_EMAIL?.trim();
-  if (!expected) return false;
-  return verifySecretEqual(normalizeEmail(email), normalizeEmail(expected));
+  const allowedList = getAllowedEmails(env);
+  if (allowedList.length === 0) return false;
+
+  const candidate = normalizeEmail(email);
+  let matched = false;
+  for (const allowed of allowedList) {
+    if (await verifySecretEqual(candidate, allowed)) {
+      matched = true;
+    }
+  }
+  return matched;
 }
 
 export function generateSixDigitOtp(): string {
-  const maxUnbiased = 4_294_000_000; // Largest multiple of 1,000,000 below 2^32
+  const maxUnbiased = 4_294_000_000;
   const buf = new Uint32Array(1);
   while (true) {
     crypto.getRandomValues(buf);
@@ -272,7 +292,7 @@ export async function sendOtpEmail(
         html: `
           <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 440px; margin: 0 auto; padding: 24px; color: #11131a;">
             <h2 style="margin: 0 0 12px; font-size: 20px;">Private Todo 이메일 인증</h2>
-            <p style="margin: 0 0 18px; color: #51586c; font-size: 14px;">아래 6자리 인증 코드를 입력하여 로그인하세요. 코드는 10분 후 만료됩니다.</p>
+            <p style="margin: 0 0 18px; color: #51586c; font-size: 14px;">아래 6자리 인증 코드를 입력하여 나만의 할 일 공간에 로그인하세요. 코드는 10분 후 만료됩니다.</p>
             <div style="font-size: 30px; font-weight: 700; letter-spacing: 6px; padding: 16px 20px; background: #f4f5f8; border-radius: 10px; text-align: center;">${code}</div>
             <p style="margin: 18px 0 0; color: #848b9f; font-size: 12px;">본인이 요청하지 않은 경우 이 메일을 무시해 주세요.</p>
           </div>
@@ -314,7 +334,7 @@ export async function createSessionToken(
 export async function verifySessionToken(
   token: string | null | undefined,
   sessionSecret: string | undefined,
-  allowedEmail?: string,
+  allowedEmails?: readonly string[],
   nowMs = Date.now()
 ): Promise<{ valid: boolean; email: string | null }> {
   if (!token || !sessionSecret) return { valid: false, email: null };
@@ -337,7 +357,7 @@ export async function verifySessionToken(
     if (
       payload.v !== 1 ||
       typeof payload.sub !== 'string' ||
-      !payload.sub ||
+      !isValidEmailFormat(payload.sub) ||
       typeof payload.exp !== 'number' ||
       typeof payload.iat !== 'number' ||
       payload.exp <= nowSec ||
@@ -346,11 +366,15 @@ export async function verifySessionToken(
       return { valid: false, email: null };
     }
 
-    if (allowedEmail && normalizeEmail(payload.sub) !== normalizeEmail(allowedEmail)) {
-      return { valid: false, email: null };
+    const email = normalizeEmail(payload.sub);
+    if (allowedEmails && allowedEmails.length > 0) {
+      const normalizedList = allowedEmails.map(normalizeEmail);
+      if (!normalizedList.includes(email)) {
+        return { valid: false, email: null };
+      }
     }
 
-    return { valid: true, email: payload.sub };
+    return { valid: true, email };
   } catch {
     return { valid: false, email: null };
   }
@@ -548,11 +572,13 @@ export async function verifyCloudflareAccessJwt(
   if (!audiences.includes(expectedAud)) return { valid: false, email: null };
 
   const email = typeof payload.email === 'string' ? normalizeEmail(payload.email) : null;
-  const allowedEmail = env.ALLOWED_EMAIL?.trim();
-  if (allowedEmail) {
-    if (!email || email !== normalizeEmail(allowedEmail)) {
-      return { valid: false, email: null };
-    }
+  if (!email || !isValidEmailFormat(email)) {
+    return { valid: false, email: null };
+  }
+
+  const allowedList = getAllowedEmails(env);
+  if (allowedList.length > 0 && !allowedList.includes(email)) {
+    return { valid: false, email: null };
   }
 
   const keys = await fetchCfAccessKeys(env.CF_ACCESS_TEAM_DOMAIN!.trim());

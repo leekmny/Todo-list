@@ -4,6 +4,7 @@ import {
   buildSessionCookie,
   createSessionToken,
   generateSixDigitOtp,
+  getAllowedEmails,
   getCookieValue,
   isAllowedEmail,
   isSameOriginMutation,
@@ -14,7 +15,7 @@ import {
 } from '../src/worker/auth';
 import type { Env } from '../src/worker/types';
 
-describe('email auth & session utilities', () => {
+describe('multi-user email auth & session utilities', () => {
   it('generates valid 6-digit numeric OTP codes', () => {
     for (let i = 0; i < 30; i += 1) {
       const code = generateSixDigitOtp();
@@ -24,40 +25,60 @@ describe('email auth & session utilities', () => {
     expect(isValidOtpFormat('abcdef')).toBe(false);
   });
 
-  it('validates email format and compares allowed email case-insensitively', async () => {
+  it('parses ALLOWED_EMAILS and ALLOWED_EMAIL cleanly with case-insensitive matching', async () => {
     expect(isValidEmailFormat('owner@example.com')).toBe(true);
     expect(isValidEmailFormat('not-an-email')).toBe(false);
 
-    const env = { ALLOWED_EMAIL: 'Owner@Example.com' } as Env;
+    const env = {
+      ALLOWED_EMAIL: 'Owner@Example.com',
+      ALLOWED_EMAILS: 'friend1@example.com, FRIEND2@example.com; invalid-entry, owner@example.com',
+    } as Env;
+
+    expect(getAllowedEmails(env)).toEqual([
+      'friend1@example.com',
+      'friend2@example.com',
+      'owner@example.com',
+    ]);
     expect(await isAllowedEmail('  owner@example.com ', env)).toBe(true);
-    expect(await isAllowedEmail('other@example.com', env)).toBe(false);
+    expect(await isAllowedEmail('friend2@example.com', env)).toBe(true);
+    expect(await isAllowedEmail('stranger@example.com', env)).toBe(false);
   });
 
-  it('creates, verifies, and rejects tampered, wrong-email, or expired session tokens', async () => {
+  it('creates, verifies, and revokes sessions when removed from allowlist or expired', async () => {
     const secret = 'very-long-random-session-secret';
     const now = Date.UTC(2026, 0, 1, 0, 0, 0);
-    const token = await createSessionToken('owner@example.com', secret, now);
+    const token = await createSessionToken('alice@example.com', secret, now);
 
-    expect(await verifySessionToken(token, secret, 'owner@example.com', now + 1000)).toEqual({
+    expect(
+      await verifySessionToken(token, secret, ['alice@example.com', 'bob@example.com'], now + 1000)
+    ).toEqual({
       valid: true,
-      email: 'owner@example.com',
+      email: 'alice@example.com',
     });
-    expect(await verifySessionToken(token, 'wrong-secret', 'owner@example.com', now + 1000)).toEqual({
+
+    // Removed from allowlist -> immediately rejected
+    expect(await verifySessionToken(token, secret, ['bob@example.com'], now + 1000)).toEqual({
       valid: false,
       email: null,
     });
-    expect(await verifySessionToken(token, secret, 'other@example.com', now + 1000)).toEqual({
+
+    expect(
+      await verifySessionToken(token, 'wrong-secret', ['alice@example.com'], now + 1000)
+    ).toEqual({
       valid: false,
       email: null,
     });
-    expect(await verifySessionToken(`${token}x`, secret, 'owner@example.com', now + 1000)).toEqual({
+
+    expect(
+      await verifySessionToken(`${token}x`, secret, ['alice@example.com'], now + 1000)
+    ).toEqual({
       valid: false,
       email: null,
     });
 
     const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
     expect(
-      await verifySessionToken(token, secret, 'owner@example.com', now + eightDaysMs)
+      await verifySessionToken(token, secret, ['alice@example.com'], now + eightDaysMs)
     ).toEqual({
       valid: false,
       email: null,

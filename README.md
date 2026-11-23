@@ -1,14 +1,19 @@
 # Private Todo
 
-Cloudflare Workers + D1 기반으로 동작하는 **이메일 인증 전용 개인 할 일 관리 웹사이트**입니다.  
-소스코드는 공개 GitHub 저장소에 안전하게 올릴 수 있도록 설계되었으며, 이메일 주소·세션 시크릿·메일 API 키·Cloudflare 개인 리소스 ID·로컬 DB 데이터는 모두 Git에서 제외됩니다.
+Cloudflare Workers + D1 기반으로 동작하는 **이메일 인증 전용 멀티유저 비밀 할 일 웹사이트**입니다.  
+초대된 이메일(`ALLOWED_EMAILS`)만 로그인할 수 있으며, **각 계정의 할 일 데이터는 `owner_email` 단위로 완전히 격리**되어 서로의 목록을 절대 볼 수 없습니다.  
+소스코드는 공개 GitHub 저장소에 안전하게 올릴 수 있도록 설계되었으며, 이메일 목록·세션 시크릿·메일 API 키·Cloudflare 개인 리소스 ID·로컬 DB 데이터는 모두 Git에서 제외됩니다.
 
 ## 주요 기능
 
+- **계정별 독립 비밀 공간 (Multi-user Isolation)**
+  - `ALLOWED_EMAILS`에 등록된 초대 사용자만 로그인 가능 (비공개 초대제)
+  - 모든 조회·생성·수정·삭제·가져오기 API가 로그인한 `owner_email` 범위로 엄격히 격리됨
+  - 허용 목록에서 이메일을 제거하면 기존 세션 쿠키도 즉시 무효화됨
 - **이메일 인증 보안 (비밀번호 없음)**
-  - **방식 1 — Cloudflare Access (One-Time PIN) 이메일 인증**: 커스텀 도메인이나 외부 메일 서비스 없이 `*.workers.dev`에서 Cloudflare가 직접 6자리 이메일 인증 코드를 발송하고, Worker가 `Cf-Access-Jwt-Assertion` 서명(RS256 JWKS) 및 허용 이메일을 검증합니다.
-  - **방식 2 — 앱 내장 6자리 이메일 OTP 로그인**: 허용된 이메일(`ALLOWED_EMAIL`)로 6자리 일회용 인증 코드(10분 유효, 60초 재발송 쿨다운, 5회 실패 잠금)를 발송하고 `HttpOnly · SameSite=Strict · Secure` HMAC-SHA256 서명 세션 쿠키를 발급합니다.
-  - 이메일 열거 방지(미허용 이메일도 동일 응답), 검색엔진 색인 차단(`robots.txt`, `X-Robots-Tag: noindex, nofollow, noarchive`), `Cache-Control: no-store`, CSRF Origin 검증
+  - **방식 1 — 앱 내장 6자리 이메일 OTP 로그인**: 허용된 이메일로 6자리 일회용 코드(10분 유효, 60초 쿨다운, 5회 실패 잠금) 발송 + `HttpOnly · SameSite=Strict · Secure` HMAC-SHA256 서명 세션 쿠키
+  - **방식 2 — Cloudflare Access (One-Time PIN)**: 커스텀 도메인 없이 여러 친구 이메일로 무료 OTP 로그인 지원 + Worker에서 `Cf-Access-Jwt-Assertion` RS256 JWKS 서명 검증
+  - 이메일 열거 방지, 검색엔진 차단(`robots.txt`, `X-Robots-Tag: noindex, nofollow, noarchive`), `Cache-Control: no-store`, CSRF Origin 검증
 - **할 일 관리**
   - 빠른 추가(`N`), 검색(`/`), 상세 메모, 상태(`할 일` / `진행 중` / `완료`)
   - 우선순위(`높음` / `보통` / `낮음`), 마감일(`오늘` / `내일` / 지남 표시), 상단 고정, 카테고리 필터
@@ -24,7 +29,7 @@ Cloudflare Workers + D1 기반으로 동작하는 **이메일 인증 전용 개�
 | 로컬 비밀키 | `.dev.vars`, `.env*` | **제외 (`.gitignore`)** |
 | 로컬 DB & 백업 | `.wrangler/`, `*.sqlite`, `*backup*.json` | **제외 (`.gitignore`)** |
 
-GitHub 푸시 전 언제든 민감 정보 포함 여부를 검사할 수 있습니다:
+GitHub 푸시 전 민감 정보 검사:
 
 ```bash
 npm run check:public
@@ -39,11 +44,11 @@ cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-- `.dev.vars`에 `ALLOWED_EMAIL`과 `DEV_OTP_CONSOLE=true`가 설정되어 있으면, 로컬(`localhost`)에서 인증 코드 요청 시 터미널 콘솔에 6자리 코드가 출력됩니다.
+- `.dev.vars`에 `ALLOWED_EMAILS`와 `DEV_OTP_CONSOLE=true`를 설정하면 `localhost`에서 요청한 6자리 인증 코드가 터미널에 출력됩니다.
 
 ## Cloudflare 배포 방법
 
-### 1. D1 데이터베이스 생성 및 원격 마이그레이션
+### 1. D1 데이터베이스 생성 및 마이그레이션
 
 ```bash
 npx wrangler d1 create private-todo-db
@@ -51,33 +56,22 @@ npx wrangler d1 create private-todo-db
 npm run db:migrate:remote
 ```
 
-### 2. 공통 Secret 등록
+### 2. 허용 이메일 목록 및 시크릿 등록
 
 ```bash
 npm run generate-secret
-npx wrangler secret put ALLOWED_EMAIL    # 본인 이메일 주소
-npx wrangler secret put SESSION_SECRET   # 생성된 랜덤 64자리 시크릿
+npx wrangler secret put ALLOWED_EMAILS   # 예: me@example.com,friend1@example.com
+npx wrangler secret put SESSION_SECRET
 ```
 
-### 3. 이메일 인증 활성화 (2가지 중 선택)
+### 3. 이메일 발송 설정 (2가지 중 선택)
 
-#### 방법 A: Cloudflare Access One-Time PIN (무료, 외부 메일 키 불필요 — 추천)
-1. Cloudflare Dashboard → **Workers & Pages** → 배포된 Worker 선택 → **Settings** → **Domains & Routes**에서 **Cloudflare Access** 활성화
-2. **Zero Trust** → **Access** → **Applications**에서 해당 Worker 앱의 정책에 본인 이메일만 허용(Include: Emails)하고 로그인 방식으로 **One-time PIN** 선택
-3. 아래 3개 시크릿을 Worker에 등록:
-
-```bash
-npx wrangler secret put CF_ACCESS_ENABLED       # true
-npx wrangler secret put CF_ACCESS_TEAM_DOMAIN   # your-team.cloudflareaccess.com
-npx wrangler secret put CF_ACCESS_AUD           # Access 앱의 Audience Tag
-```
-
-#### 방법 B: 앱 내장 6자리 이메일 OTP (Resend 무료 키)
-```bash
-npx wrangler secret put RESEND_API_KEY          # re_...
-# (선택) 커스텀 도메인 발신자 사용 시
-npx wrangler secret put MAIL_FROM               # Private Todo <auth@yourdomain.com>
-```
+- **방법 A — Resend API (`RESEND_API_KEY`)**:
+  - 1인 사용 시 무료 기본 발신(`onboarding@resend.dev`)으로 바로 동작합니다.
+  - **친구 이메일로도 발송하려면** Resend에 본인 도메인을 인증하고 `MAIL_FROM` 시크릿(예: `Private Todo <auth@yourdomain.com>`)을 함께 설정해야 합니다.
+- **방법 B — Cloudflare Access One-Time PIN (커스텀 도메인 없이 친구 여러 명 무료 지원)**:
+  - Cloudflare Dashboard → **Workers & Pages** → Worker → **Cloudflare Access** 활성화 → 정책에 본인 및 친구 이메일 등록
+  - `CF_ACCESS_ENABLED=true`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` 시크릿 등록
 
 ### 4. 배포
 
@@ -90,6 +84,6 @@ npm run deploy
 ```bash
 npm run check:public  # 공개 저장소 민감 파일/패턴 검사
 npm run typecheck     # 클라이언트 + 워커 TypeScript 검사
-npm test              # 이메일 인증 + API 통합 테스트
+npm test              # 멀티유저 격리 + 이메일 인증 API 테스트
 npm run build         # 프로덕션 빌드
 ```

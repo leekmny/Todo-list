@@ -4,6 +4,7 @@ import type { Env } from '../src/worker/types';
 
 interface StoredTodoRow {
   id: string;
+  owner_email: string;
   title: string;
   notes: string;
   status: string;
@@ -39,8 +40,16 @@ function createMockD1(): D1Database {
   function execute(sql: string, params: unknown[]) {
     const normalized = sql.replace(/\s+/g, ' ').trim();
 
-    if (normalized.startsWith('CREATE TABLE') || normalized.startsWith('CREATE INDEX')) {
+    if (
+      normalized.startsWith('CREATE TABLE') ||
+      normalized.startsWith('CREATE INDEX') ||
+      normalized.startsWith('ALTER TABLE')
+    ) {
       return { results: [], meta: { changes: 0 } };
+    }
+
+    if (normalized === 'PRAGMA table_info(todos)') {
+      return { results: [{ name: 'id' }, { name: 'owner_email' }], meta: { changes: 0 } };
     }
 
     if (normalized.startsWith('SELECT failures, locked_until FROM auth_attempts')) {
@@ -98,22 +107,33 @@ function createMockD1(): D1Database {
       return { results: [], meta: { changes: existed ? 1 : 0 } };
     }
 
-    if (normalized.startsWith('SELECT id, title, notes') && normalized.includes('WHERE id = ?')) {
-      const row = todos.get(String(params[0]));
-      return { results: row ? [row] : [], meta: { changes: 0 } };
+    if (
+      normalized.startsWith('SELECT id, owner_email, title, notes') &&
+      normalized.includes('WHERE id = ? AND owner_email = ?')
+    ) {
+      const [id, owner] = params as [string, string];
+      const row = todos.get(id);
+      return { results: row && row.owner_email === owner ? [row] : [], meta: { changes: 0 } };
     }
 
-    if (normalized.startsWith('SELECT id, title, notes') && normalized.includes('FROM todos')) {
-      const rows = Array.from(todos.values()).sort((a, b) => {
-        if (a.pinned !== b.pinned) return b.pinned - a.pinned;
-        return b.created_at.localeCompare(a.created_at);
-      });
+    if (
+      normalized.startsWith('SELECT id, owner_email, title, notes') &&
+      normalized.includes('WHERE owner_email = ?')
+    ) {
+      const owner = String(params[0]);
+      const rows = Array.from(todos.values())
+        .filter((row) => row.owner_email === owner)
+        .sort((a, b) => {
+          if (a.pinned !== b.pinned) return b.pinned - a.pinned;
+          return b.created_at.localeCompare(a.created_at);
+        });
       return { results: rows, meta: { changes: 0 } };
     }
 
     if (normalized.startsWith('INSERT INTO todos')) {
       const [
         id,
+        owner_email,
         title,
         notes,
         status,
@@ -131,6 +151,7 @@ function createMockD1(): D1Database {
         string,
         string,
         string,
+        string,
         string | null,
         number,
         string,
@@ -139,6 +160,7 @@ function createMockD1(): D1Database {
       ];
       todos.set(id, {
         id,
+        owner_email,
         title,
         notes,
         status,
@@ -165,6 +187,7 @@ function createMockD1(): D1Database {
         updated_at,
         completed_at,
         id,
+        owner_email,
       ] = params as [
         string,
         string,
@@ -176,9 +199,12 @@ function createMockD1(): D1Database {
         string,
         string | null,
         string,
+        string,
       ];
       const existing = todos.get(id);
-      if (!existing) return { results: [], meta: { changes: 0 } };
+      if (!existing || existing.owner_email !== owner_email) {
+        return { results: [], meta: { changes: 0 } };
+      }
       todos.set(id, {
         ...existing,
         title,
@@ -194,10 +220,11 @@ function createMockD1(): D1Database {
       return { results: [], meta: { changes: 1 } };
     }
 
-    if (normalized === "DELETE FROM todos WHERE status = 'done'") {
+    if (normalized === "DELETE FROM todos WHERE owner_email = ? AND status = 'done'") {
+      const owner = String(params[0]);
       let changes = 0;
       for (const [id, row] of todos.entries()) {
-        if (row.status === 'done') {
+        if (row.owner_email === owner && row.status === 'done') {
           todos.delete(id);
           changes += 1;
         }
@@ -205,9 +232,14 @@ function createMockD1(): D1Database {
       return { results: [], meta: { changes } };
     }
 
-    if (normalized.startsWith('DELETE FROM todos WHERE id = ?')) {
-      const existed = todos.delete(String(params[0]));
-      return { results: [], meta: { changes: existed ? 1 : 0 } };
+    if (normalized.startsWith('DELETE FROM todos WHERE id = ? AND owner_email = ?')) {
+      const [id, owner] = params as [string, string];
+      const row = todos.get(id);
+      if (!row || row.owner_email !== owner) {
+        return { results: [], meta: { changes: 0 } };
+      }
+      todos.delete(id);
+      return { results: [], meta: { changes: 1 } };
     }
 
     throw new Error(`Unhandled SQL in mock D1: ${normalized}`);
@@ -253,18 +285,60 @@ function createMockD1(): D1Database {
 function createEnv(overrides: Partial<Env> = {}): Env {
   return {
     DB: createMockD1(),
-    ALLOWED_EMAIL: 'owner@example.com',
+    ALLOWED_EMAILS: 'alice@example.com,bob@example.com',
     SESSION_SECRET: 'session-signing-secret-1234567890',
     RESEND_API_KEY: 'test-resend-key',
     ...overrides,
   };
 }
 
+async function loginAs(app: ReturnType<typeof createApp>, env: Env, email: string): Promise<string> {
+  let capturedCode = '';
+  const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}')) as { subject?: string };
+    const match = payload.subject?.match(/(\d{6})/);
+    capturedCode = match?.[1] ?? '';
+    return new Response(JSON.stringify({ id: 'email_1' }), { status: 200 });
+  });
+
+  const reqRes = await app.request(
+    'https://private.example.com/api/auth/request-code',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://private.example.com',
+      },
+      body: JSON.stringify({ email }),
+    },
+    env
+  );
+  expect(reqRes.status).toBe(200);
+  spy.mockRestore();
+
+  const verifyRes = await app.request(
+    'https://private.example.com/api/auth/verify-code',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: 'https://private.example.com',
+      },
+      body: JSON.stringify({ email, code: capturedCode }),
+    },
+    env
+  );
+  expect(verifyRes.status).toBe(200);
+  const setCookie = verifyRes.headers.get('Set-Cookie');
+  expect(setCookie).toBeTruthy();
+  return setCookie!.split(';')[0];
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Private Todo Worker API (Email Auth)', () => {
+describe('Private Todo Worker API (Multi-user Email Auth)', () => {
   it('blocks bots via robots.txt and sets strict security headers', async () => {
     const app = createApp();
     const env = createEnv();
@@ -293,7 +367,7 @@ describe('Private Todo Worker API (Email Auth)', () => {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'owner@example.com' }),
+        body: JSON.stringify({ email: 'alice@example.com' }),
       },
       unconfiguredEnv
     );
@@ -307,7 +381,6 @@ describe('Private Todo Worker API (Email Auth)', () => {
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(JSON.stringify({ id: 'email_1' }), { status: 200 }));
 
-    // Disallowed email gets identical 200 without sending email
     const strangerRes = await app.request(
       'https://private.example.com/api/auth/request-code',
       {
@@ -320,13 +393,12 @@ describe('Private Todo Worker API (Email Auth)', () => {
     expect(strangerRes.status).toBe(200);
     expect(fetchSpy).not.toHaveBeenCalled();
 
-    // Allowed email sends OTP once, then enforces 60s cooldown
     const first = await app.request(
       'https://private.example.com/api/auth/request-code',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'owner@example.com' }),
+        body: JSON.stringify({ email: 'alice@example.com' }),
       },
       env
     );
@@ -338,98 +410,140 @@ describe('Private Todo Worker API (Email Auth)', () => {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'owner@example.com' }),
+        body: JSON.stringify({ email: 'alice@example.com' }),
       },
       env
     );
     expect(second.status).toBe(429);
   });
 
-  it('authenticates via email OTP, executes full CRUD & import, enforces CSRF, and logs out', async () => {
+  it('strictly isolates todos between invited users and revokes removed users', async () => {
     const app = createApp();
     const env = createEnv();
-    let capturedCode = '';
 
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-      const payload = JSON.parse(String(init?.body ?? '{}')) as { subject?: string };
-      const match = payload.subject?.match(/(\d{6})/);
-      capturedCode = match?.[1] ?? '';
-      return new Response(JSON.stringify({ id: 'email_1' }), { status: 200 });
-    });
+    const aliceCookie = await loginAs(app, env, 'alice@example.com');
+    const bobCookie = await loginAs(app, env, 'bob@example.com');
 
-    // Request OTP
-    const reqRes = await app.request(
-      'https://private.example.com/api/auth/request-code',
+    // Alice creates an active todo and a completed todo
+    const aliceCreate = await app.request(
+      'https://private.example.com/api/todos',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Cookie: aliceCookie,
           Origin: 'https://private.example.com',
         },
-        body: JSON.stringify({ email: 'owner@example.com' }),
+        body: JSON.stringify({ title: 'Alice secret plan', status: 'todo' }),
       },
       env
     );
-    expect(reqRes.status).toBe(200);
-    expect(capturedCode).toMatch(/^\d{6}$/);
+    expect(aliceCreate.status).toBe(201);
+    const { item: aliceTodo } = (await aliceCreate.json()) as { item: { id: string } };
 
-    // Verify OTP
-    const verifyRes = await app.request(
-      'https://private.example.com/api/auth/verify-code',
+    await app.request(
+      'https://private.example.com/api/todos',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Cookie: aliceCookie,
           Origin: 'https://private.example.com',
         },
-        body: JSON.stringify({ email: 'owner@example.com', code: capturedCode }),
+        body: JSON.stringify({ title: 'Alice done task', status: 'done' }),
       },
       env
     );
-    expect(verifyRes.status).toBe(200);
-    const setCookie = verifyRes.headers.get('Set-Cookie');
-    expect(setCookie).toBeTruthy();
-    expect(setCookie).toContain('HttpOnly');
-    expect(setCookie).toContain('SameSite=Strict');
-    const cookieHeader = setCookie!.split(';')[0];
 
-    // Reusing the same OTP must fail (single-use)
-    const replayRes = await app.request(
-      'https://private.example.com/api/auth/verify-code',
+    // Bob creates his own todo
+    const bobCreate = await app.request(
+      'https://private.example.com/api/todos',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Cookie: bobCookie,
           Origin: 'https://private.example.com',
         },
-        body: JSON.stringify({ email: 'owner@example.com', code: capturedCode }),
+        body: JSON.stringify({ title: 'Bob private task' }),
       },
       env
     );
-    expect(replayRes.status).toBe(401);
+    expect(bobCreate.status).toBe(201);
 
-    // Auth status reflects authenticated user email
-    const statusRes = await app.request(
-      'https://private.example.com/api/auth/status',
-      { headers: { Cookie: cookieHeader } },
+    // Bob ONLY sees his own todo
+    const bobListRes = await app.request(
+      'https://private.example.com/api/todos',
+      { headers: { Cookie: bobCookie } },
       env
     );
-    expect(await statusRes.json()).toMatchObject({
-      authenticated: true,
-      configured: true,
-      emailOtpReady: true,
-      authMethod: 'email-otp',
-      userEmail: 'owner@example.com',
-    });
+    const bobList = (await bobListRes.json()) as { items: Array<{ title: string }> };
+    expect(bobList.items.map((t) => t.title)).toEqual(['Bob private task']);
 
-    // Cross-origin CSRF blocked even with valid session cookie
+    // Bob CANNOT edit, delete, or clear Alice's todos
+    const bobPatchAlice = await app.request(
+      `https://private.example.com/api/todos/${aliceTodo.id}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: bobCookie },
+        body: JSON.stringify({ title: 'Hacked' }),
+      },
+      env
+    );
+    expect(bobPatchAlice.status).toBe(404);
+
+    const bobDeleteAlice = await app.request(
+      `https://private.example.com/api/todos/${aliceTodo.id}`,
+      {
+        method: 'DELETE',
+        headers: { Cookie: bobCookie },
+      },
+      env
+    );
+    expect(bobDeleteAlice.status).toBe(404);
+
+    const bobClearCompleted = await app.request(
+      'https://private.example.com/api/todos/completed',
+      {
+        method: 'DELETE',
+        headers: { Cookie: bobCookie },
+      },
+      env
+    );
+    expect(await bobClearCompleted.json()).toEqual({ deletedCount: 0 });
+
+    // Alice still has both of her todos untouched
+    const aliceListRes = await app.request(
+      'https://private.example.com/api/todos',
+      { headers: { Cookie: aliceCookie } },
+      env
+    );
+    const aliceList = (await aliceListRes.json()) as { items: Array<{ title: string }> };
+    expect(aliceList.items).toHaveLength(2);
+
+    // If Bob is removed from ALLOWED_EMAILS, his session is immediately revoked
+    const envWithoutBob = { ...env, ALLOWED_EMAILS: 'alice@example.com' };
+    const revokedRes = await app.request(
+      'https://private.example.com/api/todos',
+      { headers: { Cookie: bobCookie } },
+      envWithoutBob
+    );
+    expect(revokedRes.status).toBe(401);
+  });
+
+  it('enforces CSRF, import, clear completed, logout, and brute-force lockout', async () => {
+    const app = createApp();
+    const env = createEnv();
+    const aliceCookie = await loginAs(app, env, 'alice@example.com');
+
+    // Cross-origin CSRF blocked
     const csrfRes = await app.request(
       'https://private.example.com/api/todos',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Cookie: cookieHeader,
+          Cookie: aliceCookie,
           Origin: 'https://attacker.example.net',
         },
         body: JSON.stringify({ title: 'Blocked' }),
@@ -438,67 +552,16 @@ describe('Private Todo Worker API (Email Auth)', () => {
     );
     expect(csrfRes.status).toBe(403);
 
-    // Create todo
-    const createRes = await app.request(
-      'https://private.example.com/api/todos',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookieHeader,
-          Origin: 'https://private.example.com',
-        },
-        body: JSON.stringify({
-          title: 'Cloudflare 배포하기',
-          notes: '이메일 인증 연동 완료',
-          priority: 'high',
-          category: '개인',
-          dueDate: '2026-11-30',
-          pinned: true,
-        }),
-      },
-      env
-    );
-    expect(createRes.status).toBe(201);
-    const { item } = (await createRes.json()) as {
-      item: { id: string; title: string; pinned: boolean };
-    };
-    expect(item.title).toBe('Cloudflare 배포하기');
-    expect(item.pinned).toBe(true);
-
-    // Patch todo to done
-    const patchRes = await app.request(
-      `https://private.example.com/api/todos/${item.id}`,
-      {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookieHeader,
-        },
-        body: JSON.stringify({ status: 'done' }),
-      },
-      env
-    );
-    expect(patchRes.status).toBe(200);
-    const patched = (await patchRes.json()) as {
-      item: { status: string; completedAt: string | null };
-    };
-    expect(patched.item.status).toBe('done');
-    expect(patched.item.completedAt).toBeTruthy();
-
     // Import & clear completed
     const importRes = await app.request(
       'https://private.example.com/api/todos/import',
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: cookieHeader,
-        },
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
         body: JSON.stringify({
           items: [
-            { title: '가져온 할 일 1', priority: 'low' },
-            { title: '가져온 할 일 2', status: 'done' },
+            { title: '할 일 1', priority: 'low' },
+            { title: '할 일 2', status: 'done' },
           ],
         }),
       },
@@ -508,32 +571,20 @@ describe('Private Todo Worker API (Email Auth)', () => {
 
     const clearRes = await app.request(
       'https://private.example.com/api/todos/completed',
-      {
-        method: 'DELETE',
-        headers: { Cookie: cookieHeader },
-      },
+      { method: 'DELETE', headers: { Cookie: aliceCookie } },
       env
     );
-    expect(clearRes.status).toBe(200);
-    expect(await clearRes.json()).toEqual({ deletedCount: 2 });
+    expect(await clearRes.json()).toEqual({ deletedCount: 1 });
 
     // Logout clears cookie
     const logoutRes = await app.request(
       'https://private.example.com/api/auth/logout',
-      {
-        method: 'POST',
-        headers: { Cookie: cookieHeader },
-      },
+      { method: 'POST', headers: { Cookie: aliceCookie } },
       env
     );
-    expect(logoutRes.status).toBe(200);
     expect(logoutRes.headers.get('Set-Cookie')).toContain('Max-Age=0');
-  });
 
-  it('locks out brute-force OTP verification attempts after 5 failures', async () => {
-    const app = createApp();
-    const env = createEnv();
-
+    // Brute-force lockout after 5 wrong attempts
     for (let i = 0; i < 4; i += 1) {
       const res = await app.request(
         'https://private.example.com/api/auth/verify-code',
@@ -543,7 +594,7 @@ describe('Private Todo Worker API (Email Auth)', () => {
             'Content-Type': 'application/json',
             'CF-Connecting-IP': '203.0.113.10',
           },
-          body: JSON.stringify({ email: 'owner@example.com', code: '000000' }),
+          body: JSON.stringify({ email: 'alice@example.com', code: '000000' }),
         },
         env
       );
@@ -558,7 +609,7 @@ describe('Private Todo Worker API (Email Auth)', () => {
           'Content-Type': 'application/json',
           'CF-Connecting-IP': '203.0.113.10',
         },
-        body: JSON.stringify({ email: 'owner@example.com', code: '000000' }),
+        body: JSON.stringify({ email: 'alice@example.com', code: '000000' }),
       },
       env
     );

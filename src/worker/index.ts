@@ -6,6 +6,7 @@ import {
   checkRateLimit,
   clearAuthFailures,
   createSessionToken,
+  getAllowedEmails,
   getCookieValue,
   hashClientIdentifier,
   isAllowedEmail,
@@ -78,7 +79,7 @@ export function createApp() {
 
     if (cfAccessEnabled) {
       const cfResult = await verifyCloudflareAccessJwt(c.req.raw, c.env);
-      if (cfResult.valid) {
+      if (cfResult.valid && cfResult.email) {
         const res: AuthStatusResponse = {
           authenticated: true,
           configured,
@@ -92,7 +93,11 @@ export function createApp() {
     }
 
     const token = getCookieValue(c.req.header('Cookie'), SESSION_COOKIE_NAME);
-    const session = await verifySessionToken(token, c.env.SESSION_SECRET, c.env.ALLOWED_EMAIL);
+    const allowedEmails = getAllowedEmails(c.env);
+    const session =
+      allowedEmails.length > 0
+        ? await verifySessionToken(token, c.env.SESSION_SECRET, allowedEmails)
+        : { valid: false, email: null };
 
     const res: AuthStatusResponse = {
       authenticated: session.valid,
@@ -112,7 +117,10 @@ export function createApp() {
 
     if (!isEmailOtpConfigured(c.env, c.req.url)) {
       return c.json(
-        { error: '이메일 인증 발송 설정(ALLOWED_EMAIL / SESSION_SECRET / 메일 발송기)이 필요합니다.' },
+        {
+          error:
+            '이메일 인증 발송 설정(ALLOWED_EMAILS / SESSION_SECRET / 메일 발송기)이 필요합니다.',
+        },
         503
       );
     }
@@ -267,22 +275,27 @@ export function createApp() {
 
     if (isCfAccessEnabled(c.env)) {
       const cfResult = await verifyCloudflareAccessJwt(c.req.raw, c.env);
-      if (cfResult.valid) {
+      if (cfResult.valid && cfResult.email) {
         c.set('authMethod', 'cf-access');
-        c.set('userEmail', cfResult.email ?? '');
+        c.set('userEmail', cfResult.email);
         await ensureSchema(c.env.DB);
         return next();
       }
     }
 
+    const allowedEmails = getAllowedEmails(c.env);
+    if (allowedEmails.length === 0) {
+      return c.json({ error: '이메일 인증이 필요합니다.' }, 401);
+    }
+
     const token = getCookieValue(c.req.header('Cookie'), SESSION_COOKIE_NAME);
-    const session = await verifySessionToken(token, c.env.SESSION_SECRET, c.env.ALLOWED_EMAIL);
-    if (!session.valid) {
+    const session = await verifySessionToken(token, c.env.SESSION_SECRET, allowedEmails);
+    if (!session.valid || !session.email) {
       return c.json({ error: '이메일 인증이 필요합니다.' }, 401);
     }
 
     c.set('authMethod', 'email-otp');
-    c.set('userEmail', session.email ?? '');
+    c.set('userEmail', session.email);
     await ensureSchema(c.env.DB);
     return next();
   };
@@ -291,7 +304,7 @@ export function createApp() {
   app.use('/api/todos/*', requireAuth);
 
   app.get('/api/todos', async (c) => {
-    const items = await listTodos(c.env.DB);
+    const items = await listTodos(c.env.DB, c.get('userEmail'));
     return c.json({ items });
   });
 
@@ -308,7 +321,7 @@ export function createApp() {
       return c.json({ error: parsed.error }, 400);
     }
 
-    const item = await createTodo(c.env.DB, parsed.data);
+    const item = await createTodo(c.env.DB, c.get('userEmail'), parsed.data);
     return c.json({ item }, 201);
   });
 
@@ -325,12 +338,12 @@ export function createApp() {
       return c.json({ error: parsed.error }, 400);
     }
 
-    const items = await importTodos(c.env.DB, parsed.data);
+    const items = await importTodos(c.env.DB, c.get('userEmail'), parsed.data);
     return c.json({ items, importedCount: items.length }, 201);
   });
 
   app.delete('/api/todos/completed', async (c) => {
-    const deletedCount = await clearCompletedTodos(c.env.DB);
+    const deletedCount = await clearCompletedTodos(c.env.DB, c.get('userEmail'));
     return c.json({ deletedCount });
   });
 
@@ -348,7 +361,7 @@ export function createApp() {
       return c.json({ error: parsed.error }, 400);
     }
 
-    const item = await updateTodo(c.env.DB, id, parsed.data);
+    const item = await updateTodo(c.env.DB, c.get('userEmail'), id, parsed.data);
     if (!item) {
       return c.json({ error: '할 일을 찾을 수 없습니다.' }, 404);
     }
@@ -358,7 +371,7 @@ export function createApp() {
 
   app.delete('/api/todos/:id', async (c) => {
     const id = c.req.param('id');
-    const deleted = await deleteTodo(c.env.DB, id);
+    const deleted = await deleteTodo(c.env.DB, c.get('userEmail'), id);
     if (!deleted) {
       return c.json({ error: '할 일을 찾을 수 없습니다.' }, 404);
     }

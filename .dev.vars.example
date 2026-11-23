@@ -2,22 +2,26 @@
 # Copy this file to `.dev.vars` (gitignored) and replace with your own values.
 # In Cloudflare production, set secrets via `npx wrangler secret put <KEY>`.
 
-# Only this email address is allowed to sign in
-ALLOWED_EMAIL=you@example.com
+# Comma-separated list of allowed emails (each email gets its own isolated private workspace)
+ALLOWED_EMAILS=me@example.com,friend1@example.com,friend2@example.com
+# Legacy single-user key is also still supported:
+# ALLOWED_EMAIL=you@example.com
 
 # Random secret string (32+ chars) used to sign HttpOnly session cookies & OTP hashes
 # Generate with: npm run generate-secret
 SESSION_SECRET=change-me-to-a-long-random-session-secret-string
 
-# Option A (App built-in Email OTP): Resend API key (free tier works with onboarding@resend.dev)
+# Option A (App built-in Email OTP): Resend API key
+# Note: Free `onboarding@resend.dev` can only send to the Resend account owner's email.
+# To email invited friends via Resend, verify a custom domain in Resend and set MAIL_FROM.
 # RESEND_API_KEY=your-resend-api-key
-# MAIL_FROM=Private Todo <onboarding@resend.dev>
+# MAIL_FROM=Private Todo <auth@yourdomain.com>
 
 # Local dev only (ignored outside localhost): prints the 6-digit OTP to your terminal
 DEV_OTP_CONSOLE=true
 
-# Option B (Cloudflare Access One-Time PIN Email Auth - zero external mail API required)
-# Enable Cloudflare Access on your Worker in Cloudflare Dashboard, then set:
+# Option B (Cloudflare Access One-Time PIN - free multi-user email OTP with zero custom domain)
+# Enable Cloudflare Access on your Worker in Cloudflare Dashboard and allow your & friends' emails:
 # CF_ACCESS_ENABLED=true
 # CF_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
 # CF_ACCESS_AUD=your-application-audience-tag

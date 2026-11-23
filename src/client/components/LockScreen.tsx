@@ -92,7 +92,7 @@ export function LockScreen({ emailOtpReady, cfAccessEnabled, onUnlocked }: LockS
         <p className="lock-subtitle">
           {step === 'code'
             ? `${email.trim()}로 발송된 6자리 인증 코드를 입력하세요.`
-            : '개인 전용 공간입니다. 허용된 이메일 인증으로 로그인하세요.'}
+            : '초대된 사용자 전용 공간입니다. 본인 이메일로 인증하면 나만의 비밀 공간이 열립니다.'}
         </p>
 
         {!emailOtpReady && !cfAccessEnabled ? (

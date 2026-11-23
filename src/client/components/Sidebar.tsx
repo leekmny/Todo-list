@@ -92,7 +92,7 @@ export function Sidebar({
             </div>
             <div>
               <div className="brand-name">Private Todo</div>
-              <div className="brand-badge">비밀 개인 워크스페이스</div>
+              <div className="brand-badge">계정별 독립 비밀 공간</div>
             </div>
             <button
               type="button"
