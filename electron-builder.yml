@@ -1,0 +1,40 @@
+appId: com.leekmny.privatetodo
+productName: Private Todo
+copyright: Copyright © 2026 Private Todo Contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/electron/**/*
+  - dist/desktop-client/**/*
+  - package.json
+  - "!node_modules/**/*"
+asar: true
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Private Todo
+  artifactName: Private-Todo-Setup-${version}.exe
+portable:
+  artifactName: Private-Todo-${version}-portable.exe
+mac:
+  icon: build/icon.png
+  category: public.app-category.productivity
+  target:
+    - dmg
+linux:
+  icon: build/icon.png
+  category: Utility
+  target:
+    - AppImage

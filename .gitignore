@@ -1,6 +1,8 @@
 # Dependencies & build output
 node_modules/
 dist/
+release/
+build/
 coverage/
 *.tsbuildinfo
 
@@ -18,12 +20,13 @@ wrangler.json
 wrangler.toml
 .wrangler/
 
-# Local databases & backups
+# Local databases, vaults & backups
 *.sqlite
 *.sqlite3
 *.db
 *.db-shm
 *.db-wal
+*.enc
 *backup*.json
 
 # OS & editor files

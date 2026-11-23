@@ -1,7 +1,9 @@
 import type { Env } from './types';
 
 export const SESSION_COOKIE_NAME = 'private_todo_session';
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+export const LONG_SESSION_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 days (Remember me)
+export const SHORT_SESSION_TTL_SECONDS = 60 * 60 * 24; // 24 hours
+const SESSION_RENEW_THRESHOLD_SECONDS = 60 * 60 * 12; // Renew silently after 12 hours
 const MAX_AUTH_FAILURES = 5;
 const LOCKOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -18,8 +20,16 @@ const textDecoder = new TextDecoder();
 interface SessionPayload {
   v: 1;
   sub: string;
+  rm?: boolean;
   iat: number;
   exp: number;
+}
+
+export interface VerifiedSession {
+  valid: boolean;
+  email: string | null;
+  rememberMe: boolean;
+  shouldRenew: boolean;
 }
 
 interface JwksKey extends JsonWebKey {
@@ -134,16 +144,23 @@ export function isCfAccessEnabled(env: Env): boolean {
   );
 }
 
+export function isPublicSignupEnabled(env: Env): boolean {
+  return env.ALLOW_PUBLIC_SIGNUP === 'true';
+}
+
 export function isEmailOtpConfigured(env: Env, requestUrl: string): boolean {
-  const hasAllowedEmail = getAllowedEmails(env).length > 0;
+  const hasAccessRule = getAllowedEmails(env).length > 0 || isPublicSignupEnabled(env);
   const hasSessionSecret = Boolean(env.SESSION_SECRET?.trim());
   const hasMailSender =
     Boolean(env.RESEND_API_KEY?.trim()) ||
     (env.DEV_OTP_CONSOLE === 'true' && isLocalhostUrl(requestUrl));
-  return hasAllowedEmail && hasSessionSecret && hasMailSender;
+  return hasAccessRule && hasSessionSecret && hasMailSender;
 }
 
 export async function isAllowedEmail(email: string, env: Env): Promise<boolean> {
+  if (isPublicSignupEnabled(env)) {
+    return isValidEmailFormat(email);
+  }
   const allowedList = getAllowedEmails(env);
   if (allowedList.length === 0) return false;
 
@@ -317,14 +334,17 @@ export async function sendOtpEmail(
 export async function createSessionToken(
   email: string,
   sessionSecret: string,
+  rememberMe = true,
   nowMs = Date.now()
 ): Promise<string> {
   const iat = Math.floor(nowMs / 1000);
+  const ttl = rememberMe ? LONG_SESSION_TTL_SECONDS : SHORT_SESSION_TTL_SECONDS;
   const payload: SessionPayload = {
     v: 1,
     sub: normalizeEmail(email),
+    rm: rememberMe,
     iat,
-    exp: iat + SESSION_TTL_SECONDS,
+    exp: iat + ttl,
   };
   const encodedPayload = toBase64Url(textEncoder.encode(JSON.stringify(payload)));
   const sig = await hmacSha256(sessionSecret, textEncoder.encode(encodedPayload));
@@ -336,20 +356,27 @@ export async function verifySessionToken(
   sessionSecret: string | undefined,
   allowedEmails?: readonly string[],
   nowMs = Date.now()
-): Promise<{ valid: boolean; email: string | null }> {
-  if (!token || !sessionSecret) return { valid: false, email: null };
+): Promise<VerifiedSession> {
+  const invalid: VerifiedSession = {
+    valid: false,
+    email: null,
+    rememberMe: false,
+    shouldRenew: false,
+  };
+
+  if (!token || !sessionSecret) return invalid;
   const parts = token.split('.');
-  if (parts.length !== 2) return { valid: false, email: null };
+  if (parts.length !== 2) return invalid;
 
   const [encodedPayload, encodedSig] = parts;
   const providedSig = fromBase64Url(encodedSig);
-  if (!providedSig) return { valid: false, email: null };
+  if (!providedSig) return invalid;
 
   const expectedSig = await hmacSha256(sessionSecret, textEncoder.encode(encodedPayload));
-  if (!constantTimeEqual(providedSig, expectedSig)) return { valid: false, email: null };
+  if (!constantTimeEqual(providedSig, expectedSig)) return invalid;
 
   const payloadBytes = fromBase64Url(encodedPayload);
-  if (!payloadBytes) return { valid: false, email: null };
+  if (!payloadBytes) return invalid;
 
   try {
     const payload = JSON.parse(textDecoder.decode(payloadBytes)) as Partial<SessionPayload>;
@@ -363,20 +390,24 @@ export async function verifySessionToken(
       payload.exp <= nowSec ||
       payload.iat > nowSec + 60
     ) {
-      return { valid: false, email: null };
+      return invalid;
     }
 
     const email = normalizeEmail(payload.sub);
     if (allowedEmails && allowedEmails.length > 0) {
       const normalizedList = allowedEmails.map(normalizeEmail);
       if (!normalizedList.includes(email)) {
-        return { valid: false, email: null };
+        return invalid;
       }
     }
 
-    return { valid: true, email };
+    const rememberMe = payload.rm !== false;
+    const ageSeconds = nowSec - payload.iat;
+    const shouldRenew = rememberMe && ageSeconds >= SESSION_RENEW_THRESHOLD_SECONDS;
+
+    return { valid: true, email, rememberMe, shouldRenew };
   } catch {
-    return { valid: false, email: null };
+    return invalid;
   }
 }
 
@@ -394,13 +425,21 @@ export function getCookieValue(cookieHeader: string | null | undefined, name: st
   return null;
 }
 
-export function buildSessionCookie(token: string, isHttps: boolean): string {
+export function buildSessionCookie(
+  token: string,
+  isHttps: boolean,
+  rememberMe = true,
+  nowMs = Date.now()
+): string {
+  const ttl = rememberMe ? LONG_SESSION_TTL_SECONDS : SHORT_SESSION_TTL_SECONDS;
+  const expires = new Date(nowMs + ttl * 1000).toUTCString();
   const parts = [
     `${SESSION_COOKIE_NAME}=${token}`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Strict',
-    `Max-Age=${SESSION_TTL_SECONDS}`,
+    'SameSite=Lax',
+    `Max-Age=${ttl}`,
+    `Expires=${expires}`,
   ];
   if (isHttps) {
     parts.push('Secure');
@@ -413,8 +452,9 @@ export function buildClearSessionCookie(isHttps: boolean): string {
     `${SESSION_COOKIE_NAME}=`,
     'Path=/',
     'HttpOnly',
-    'SameSite=Strict',
+    'SameSite=Lax',
     'Max-Age=0',
+    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
   ];
   if (isHttps) {
     parts.push('Secure');

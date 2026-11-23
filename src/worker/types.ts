@@ -3,6 +3,7 @@ export interface Env {
   ASSETS?: Fetcher;
   ALLOWED_EMAIL?: string;
   ALLOWED_EMAILS?: string;
+  ALLOW_PUBLIC_SIGNUP?: string;
   SESSION_SECRET?: string;
   RESEND_API_KEY?: string;
   MAIL_FROM?: string;

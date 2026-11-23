@@ -1,0 +1,52 @@
+name: Build Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach assets to (e.g. v2.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:public
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build:icon
+      - run: npm run build:web-only
+      - run: npm run build:electron
+      - name: Package Electron app
+        run: npx electron-builder --${{ matrix.platform }} --config electron-builder.yml --publish never
+      - name: Upload artifacts to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          shopt -s nullglob
+          files=(release/*.exe release/*.dmg release/*.AppImage)
+          if [ ${#files[@]} -gt 0 ]; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          fi

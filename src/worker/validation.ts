@@ -1,9 +1,12 @@
 import {
   TODO_LIMITS,
   TODO_PRIORITIES,
+  TODO_RECURRENCES,
   TODO_STATUSES,
   type CreateTodoInput,
+  type SubtaskItem,
   type TodoPriority,
+  type TodoRecurrence,
   type TodoStatus,
   type UpdateTodoInput,
 } from '../shared/types';
@@ -39,6 +42,44 @@ function isStatus(value: unknown): value is TodoStatus {
 
 function isPriority(value: unknown): value is TodoPriority {
   return typeof value === 'string' && (TODO_PRIORITIES as readonly string[]).includes(value);
+}
+
+function isRecurrence(value: unknown): value is TodoRecurrence {
+  return typeof value === 'string' && (TODO_RECURRENCES as readonly string[]).includes(value);
+}
+
+function validateSubtasks(raw: unknown): Validated<SubtaskItem[]> {
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: '하위 할 일은 배열 형식이어야 합니다.' };
+  }
+  if (raw.length > TODO_LIMITS.MAX_SUBTASKS) {
+    return { ok: false, error: `하위 할 일은 최대 ${TODO_LIMITS.MAX_SUBTASKS}개까지 가능합니다.` };
+  }
+  const items: SubtaskItem[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    if (!entry || typeof entry !== 'object') {
+      return { ok: false, error: '하위 할 일 형식이 올바르지 않습니다.' };
+    }
+    const obj = entry as Record<string, unknown>;
+    if (typeof obj.title !== 'string') {
+      return { ok: false, error: '하위 할 일 제목을 입력해 주세요.' };
+    }
+    const title = obj.title.trim();
+    if (!title || title.length > TODO_LIMITS.MAX_SUBTASK_TITLE_LENGTH) {
+      return {
+        ok: false,
+        error: `하위 할 일 제목은 1~${TODO_LIMITS.MAX_SUBTASK_TITLE_LENGTH}자여야 합니다.`,
+      };
+    }
+    const id =
+      typeof obj.id === 'string' && obj.id.trim().length > 0 && obj.id.length <= 64
+        ? obj.id.trim()
+        : crypto.randomUUID();
+    const done = Boolean(obj.done);
+    items.push({ id, title, done });
+  }
+  return { ok: true, data: items };
 }
 
 export function validateCreateTodo(body: unknown): Validated<CreateTodoInput> {
@@ -116,9 +157,37 @@ export function validateCreateTodo(body: unknown): Validated<CreateTodoInput> {
     pinned = raw.pinned;
   }
 
+  let subtasks: SubtaskItem[] = [];
+  if (raw.subtasks !== undefined) {
+    const parsedSubtasks = validateSubtasks(raw.subtasks);
+    if (!parsedSubtasks.ok) return parsedSubtasks;
+    subtasks = parsedSubtasks.data;
+  }
+
+  let recurrence: TodoRecurrence = 'none';
+  if (raw.recurrence !== undefined) {
+    if (!isRecurrence(raw.recurrence)) {
+      return { ok: false, error: '반복 주기 값이 올바르지 않습니다.' };
+    }
+    recurrence = raw.recurrence;
+  }
+
+  let focusMinutes = 0;
+  if (raw.focusMinutes !== undefined) {
+    if (
+      typeof raw.focusMinutes !== 'number' ||
+      !Number.isInteger(raw.focusMinutes) ||
+      raw.focusMinutes < 0 ||
+      raw.focusMinutes > TODO_LIMITS.MAX_FOCUS_MINUTES
+    ) {
+      return { ok: false, error: '집중 시간 값이 올바르지 않습니다.' };
+    }
+    focusMinutes = raw.focusMinutes;
+  }
+
   return {
     ok: true,
-    data: { title, notes, status, priority, category, dueDate, pinned },
+    data: { title, notes, status, priority, category, dueDate, pinned, subtasks, recurrence, focusMinutes },
   };
 }
 
@@ -200,11 +269,61 @@ export function validateUpdateTodo(body: unknown): Validated<UpdateTodoInput> {
     patch.pinned = raw.pinned;
   }
 
+  if (raw.subtasks !== undefined) {
+    const parsedSubtasks = validateSubtasks(raw.subtasks);
+    if (!parsedSubtasks.ok) return parsedSubtasks;
+    patch.subtasks = parsedSubtasks.data;
+  }
+
+  if (raw.recurrence !== undefined) {
+    if (!isRecurrence(raw.recurrence)) {
+      return { ok: false, error: '반복 주기 값이 올바르지 않습니다.' };
+    }
+    patch.recurrence = raw.recurrence;
+  }
+
+  if (raw.sortOrder !== undefined) {
+    if (typeof raw.sortOrder !== 'number' || !Number.isInteger(raw.sortOrder)) {
+      return { ok: false, error: '정렬 순서 값이 올바르지 않습니다.' };
+    }
+    patch.sortOrder = raw.sortOrder;
+  }
+
+  if (raw.focusMinutes !== undefined) {
+    if (
+      typeof raw.focusMinutes !== 'number' ||
+      !Number.isInteger(raw.focusMinutes) ||
+      raw.focusMinutes < 0 ||
+      raw.focusMinutes > TODO_LIMITS.MAX_FOCUS_MINUTES
+    ) {
+      return { ok: false, error: '집중 시간 값이 올바르지 않습니다.' };
+    }
+    patch.focusMinutes = raw.focusMinutes;
+  }
+
   if (Object.keys(patch).length === 0) {
     return { ok: false, error: '수정할 항목이 없습니다.' };
   }
 
   return { ok: true, data: patch };
+}
+
+export function validateReorderPayload(body: unknown): Validated<string[]> {
+  if (!body || typeof body !== 'object') {
+    return { ok: false, error: '정렬 요청 형식이 올바르지 않습니다.' };
+  }
+  const raw = body as Record<string, unknown>;
+  if (!Array.isArray(raw.orderedIds) || raw.orderedIds.length === 0 || raw.orderedIds.length > 500) {
+    return { ok: false, error: '정렬할 항목 ID 목록이 올바르지 않습니다.' };
+  }
+  const ids: string[] = [];
+  for (const id of raw.orderedIds) {
+    if (typeof id !== 'string' || !id.trim() || id.length > 64) {
+      return { ok: false, error: '유효하지 않은 항목 ID가 포함되어 있습니다.' };
+    }
+    ids.push(id.trim());
+  }
+  return { ok: true, data: ids };
 }
 
 export function validateImportPayload(body: unknown): Validated<CreateTodoInput[]> {

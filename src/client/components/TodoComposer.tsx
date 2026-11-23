@@ -1,6 +1,7 @@
-import { useState, type FormEvent, type RefObject } from 'react';
-import { Calendar, ChevronDown, ChevronUp, Pin, Plus, Tag } from 'lucide-react';
-import type { CreateTodoInput, TodoPriority } from '../../shared/types';
+import { useMemo, useState, type FormEvent, type RefObject } from 'react';
+import { Calendar, ChevronDown, ChevronUp, Pin, Plus, Repeat, Sparkles, Tag } from 'lucide-react';
+import { parseQuickTodoInput } from '../../shared/quickParse';
+import type { CreateTodoInput, TodoPriority, TodoRecurrence } from '../../shared/types';
 
 interface TodoComposerProps {
   inputRef: RefObject<HTMLInputElement | null>;
@@ -8,6 +9,13 @@ interface TodoComposerProps {
   defaultCategory?: string | null;
   onCreate: (input: CreateTodoInput) => Promise<void>;
 }
+
+const RECURRENCE_LABELS: Record<TodoRecurrence, string> = {
+  none: '반복 없음',
+  daily: '매일',
+  weekly: '매주',
+  monthly: '매월',
+};
 
 function getLocalDateOffset(daysOffset: number): string {
   const date = new Date();
@@ -27,31 +35,53 @@ export function TodoComposer({
   const [title, setTitle] = useState('');
   const [notes, setNotes] = useState('');
   const [priority, setPriority] = useState<TodoPriority>('medium');
+  const [priorityTouched, setPriorityTouched] = useState(false);
   const [category, setCategory] = useState(defaultCategory ?? '');
   const [dueDate, setDueDate] = useState('');
+  const [recurrence, setRecurrence] = useState<TodoRecurrence>('none');
   const [pinned, setPinned] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
+  const parsedPreview = useMemo(() => {
+    if (!title.trim()) return null;
+    const parsed = parseQuickTodoInput(title);
+    const hasTokens = Boolean(
+      parsed.category || parsed.priority || parsed.dueDate || parsed.recurrence || parsed.pinned
+    );
+    return hasTokens ? parsed : null;
+  }, [title]);
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    const trimmedTitle = title.trim();
-    if (!trimmedTitle || submitting) return;
+    const rawTitle = title.trim();
+    if (!rawTitle || submitting) return;
+
+    const parsed = parseQuickTodoInput(rawTitle);
+    const finalTitle = parsed.title || rawTitle;
+    const finalPriority = priorityTouched ? priority : parsed.priority ?? priority;
+    const finalCategory = (category.trim() || parsed.category || defaultCategory || '').trim();
+    const finalDueDate = dueDate || parsed.dueDate || null;
+    const finalRecurrence = recurrence !== 'none' ? recurrence : parsed.recurrence ?? 'none';
+    const finalPinned = pinned || Boolean(parsed.pinned);
 
     setSubmitting(true);
     try {
       await onCreate({
-        title: trimmedTitle,
+        title: finalTitle,
         notes: notes.trim(),
-        priority,
-        category: (category || defaultCategory || '').trim(),
-        dueDate: dueDate || null,
-        pinned,
+        priority: finalPriority,
+        category: finalCategory,
+        dueDate: finalDueDate,
+        recurrence: finalRecurrence,
+        pinned: finalPinned,
       });
       setTitle('');
       setNotes('');
       setPriority('medium');
+      setPriorityTouched(false);
       setDueDate('');
+      setRecurrence('none');
       setPinned(false);
       if (!defaultCategory) {
         setCategory('');
@@ -70,7 +100,7 @@ export function TodoComposer({
           ref={inputRef}
           type="text"
           className="composer-input"
-          placeholder="새로운 할 일을 입력하세요... (단축키 N)"
+          placeholder="할 일 입력... (예: 운동하기 매일 #건강 내일 !높음)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           maxLength={200}
@@ -94,6 +124,24 @@ export function TodoComposer({
         </button>
       </div>
 
+      {parsedPreview && (
+        <div className="nlp-preview" aria-label="자동 인식된 속성">
+          <Sparkles size={12} />
+          <span>자동 인식:</span>
+          {parsedPreview.category && <span className="nlp-chip">#{parsedPreview.category}</span>}
+          {parsedPreview.priority && (
+            <span className="nlp-chip">
+              우선순위 {parsedPreview.priority === 'high' ? '높음' : parsedPreview.priority === 'medium' ? '보통' : '낮음'}
+            </span>
+          )}
+          {parsedPreview.dueDate && <span className="nlp-chip">마감 {parsedPreview.dueDate}</span>}
+          {parsedPreview.recurrence && (
+            <span className="nlp-chip">{RECURRENCE_LABELS[parsedPreview.recurrence]} 반복</span>
+          )}
+          {parsedPreview.pinned && <span className="nlp-chip">상단 고정</span>}
+        </div>
+      )}
+
       {expanded && (
         <div className="composer-details">
           <textarea
@@ -112,7 +160,10 @@ export function TodoComposer({
                   key={level}
                   type="button"
                   className={`chip priority-chip priority-${level} ${priority === level ? 'is-selected' : ''}`}
-                  onClick={() => setPriority(level)}
+                  onClick={() => {
+                    setPriority(level);
+                    setPriorityTouched(true);
+                  }}
                 >
                   {level === 'high' ? '높음' : level === 'medium' ? '보통' : '낮음'}
                 </button>
@@ -147,6 +198,21 @@ export function TodoComposer({
             </div>
 
             <div className="control-group">
+              <div className="inline-field">
+                <Repeat size={13} />
+                <select
+                  className="inline-input inline-select"
+                  value={recurrence}
+                  onChange={(e) => setRecurrence(e.target.value as TodoRecurrence)}
+                  aria-label="반복 주기"
+                >
+                  <option value="none">반복 없음</option>
+                  <option value="daily">매일</option>
+                  <option value="weekly">매주</option>
+                  <option value="monthly">매월</option>
+                </select>
+              </div>
+
               <div className="inline-field">
                 <Tag size={14} />
                 <input

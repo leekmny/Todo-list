@@ -1,6 +1,13 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Pin, Trash2, X } from 'lucide-react';
-import type { TodoItem, TodoPriority, TodoStatus, UpdateTodoInput } from '../../shared/types';
+import { Check, Pin, Plus, Timer, Trash2, X } from 'lucide-react';
+import type {
+  SubtaskItem,
+  TodoItem,
+  TodoPriority,
+  TodoRecurrence,
+  TodoStatus,
+  UpdateTodoInput,
+} from '../../shared/types';
 
 interface TodoEditModalProps {
   todo: TodoItem;
@@ -23,7 +30,10 @@ export function TodoEditModal({
   const [priority, setPriority] = useState<TodoPriority>(todo.priority);
   const [category, setCategory] = useState(todo.category);
   const [dueDate, setDueDate] = useState(todo.dueDate ?? '');
+  const [recurrence, setRecurrence] = useState<TodoRecurrence>(todo.recurrence ?? 'none');
   const [pinned, setPinned] = useState(todo.pinned);
+  const [subtasks, setSubtasks] = useState<SubtaskItem[]>(todo.subtasks ?? []);
+  const [newSubtask, setNewSubtask] = useState('');
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -35,6 +45,13 @@ export function TodoEditModal({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
+
+  function handleAddSubtask() {
+    const trimmed = newSubtask.trim();
+    if (!trimmed) return;
+    setSubtasks((prev) => [...prev, { id: crypto.randomUUID(), title: trimmed, done: false }]);
+    setNewSubtask('');
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -50,7 +67,9 @@ export function TodoEditModal({
         priority,
         category: category.trim(),
         dueDate: dueDate || null,
+        recurrence,
         pinned,
+        subtasks,
       });
       onClose();
     } finally {
@@ -99,12 +118,70 @@ export function TodoEditModal({
             <textarea
               id="edit-notes"
               className="textarea"
-              rows={5}
+              rows={4}
               placeholder="세부 계획이나 메모를 기록하세요"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               maxLength={5000}
             />
+          </div>
+
+          <div className="field">
+            <label>하위 체크리스트 ({subtasks.filter((s) => s.done).length}/{subtasks.length})</label>
+            {subtasks.length > 0 && (
+              <ul className="subtask-list modal-subtask-list">
+                {subtasks.map((st) => (
+                  <li key={st.id} className={`subtask-row ${st.done ? 'is-done' : ''}`}>
+                    <button
+                      type="button"
+                      className={`subtask-check ${st.done ? 'is-checked' : ''}`}
+                      onClick={() =>
+                        setSubtasks((prev) =>
+                          prev.map((item) =>
+                            item.id === st.id ? { ...item, done: !item.done } : item
+                          )
+                        )
+                      }
+                    >
+                      {st.done && <Check size={10} strokeWidth={3} />}
+                    </button>
+                    <span className="subtask-title">{st.title}</span>
+                    <button
+                      type="button"
+                      className="subtask-remove"
+                      onClick={() => setSubtasks((prev) => prev.filter((item) => item.id !== st.id))}
+                    >
+                      <X size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="modal-subtask-input-row">
+              <input
+                type="text"
+                className="input"
+                placeholder="하위 항목 입력 후 추가"
+                value={newSubtask}
+                onChange={(e) => setNewSubtask(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddSubtask();
+                  }
+                }}
+                maxLength={140}
+              />
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={handleAddSubtask}
+                disabled={!newSubtask.trim()}
+              >
+                <Plus size={14} />
+                <span>추가</span>
+              </button>
+            </div>
           </div>
 
           <div className="field-grid">
@@ -148,6 +225,21 @@ export function TodoEditModal({
             </div>
 
             <div className="field">
+              <label htmlFor="edit-recurrence">반복 주기</label>
+              <select
+                id="edit-recurrence"
+                className="input"
+                value={recurrence}
+                onChange={(e) => setRecurrence(e.target.value as TodoRecurrence)}
+              >
+                <option value="none">반복 없음</option>
+                <option value="daily">매일</option>
+                <option value="weekly">매주</option>
+                <option value="monthly">매월</option>
+              </select>
+            </div>
+
+            <div className="field field-span-2">
               <label htmlFor="edit-category">카테고리</label>
               <input
                 id="edit-category"
@@ -176,9 +268,16 @@ export function TodoEditModal({
               <Pin size={14} />
               <span>{pinned ? '상단 고정됨' : '상단 고정'}</span>
             </button>
-            <span className="modal-timestamp">
-              생성 {new Date(todo.createdAt).toLocaleDateString('ko-KR')}
-            </span>
+            <div className="modal-timestamp-group">
+              {todo.focusMinutes > 0 && (
+                <span className="modal-timestamp">
+                  <Timer size={12} /> 집중 {todo.focusMinutes}분
+                </span>
+              )}
+              <span className="modal-timestamp">
+                생성 {new Date(todo.createdAt).toLocaleDateString('ko-KR')}
+              </span>
+            </div>
           </div>
 
           <div className="modal-footer">

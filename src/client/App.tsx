@@ -1,8 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpDown, CheckCheck, Menu, Search, Sparkles, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import {
+  ArrowUpDown,
+  CalendarDays,
+  CheckCheck,
+  Columns3,
+  List,
+  Menu,
+  Search,
+  Sparkles,
+  X,
+} from 'lucide-react';
 import type {
   AuthStatusResponse,
   CreateTodoInput,
+  SubtaskItem,
   TodoItem as TodoModel,
   TodoStatus,
   UpdateTodoInput,
@@ -15,16 +26,25 @@ import {
   fetchTodos,
   getAuthStatus,
   importTodosApi,
+  isDesktopApp,
+  isLocalDesktopMode,
   logoutSession,
+  reorderTodosApi,
+  switchDesktopToLocalApi,
   updateTodoApi,
 } from './api';
+import { CalendarView } from './components/CalendarView';
+import { DesktopSecurityModal } from './components/DesktopSecurityModal';
+import { KanbanBoard } from './components/KanbanBoard';
 import { LockScreen } from './components/LockScreen';
+import { PomodoroWidget } from './components/PomodoroWidget';
 import { Sidebar, type SmartView } from './components/Sidebar';
 import { TodoComposer } from './components/TodoComposer';
 import { TodoEditModal } from './components/TodoEditModal';
 import { TodoItem } from './components/TodoItem';
 
 type SortMode = 'default' | 'dueDate' | 'priority';
+type DisplayMode = 'list' | 'kanban' | 'calendar';
 
 interface ToastMessage {
   id: number;
@@ -57,12 +77,20 @@ export function App() {
   const [loadingTodos, setLoadingTodos] = useState(false);
 
   const [activeView, setActiveView] = useState<SmartView>('all');
+  const [displayMode, setDisplayMode] = useState<DisplayMode>('list');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortMode, setSortMode] = useState<SortMode>('default');
   const [editingTodo, setEditingTodo] = useState<TodoModel | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showDesktopSecurity, setShowDesktopSecurity] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
+
+  const [pomoOpen, setPomoOpen] = useState(false);
+  const [focusTodoId, setFocusTodoId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = window.localStorage.getItem('private-todo-theme');
@@ -139,6 +167,12 @@ export function App() {
           target.tagName === 'TEXTAREA' ||
           target.tagName === 'SELECT' ||
           target.isContentEditable);
+
+      if (event.key === 'Escape') {
+        setShowShortcuts(false);
+        return;
+      }
+
       if (isTyping || editingTodo) return;
 
       if (event.key === '/') {
@@ -147,6 +181,15 @@ export function App() {
       } else if (event.key.toLowerCase() === 'n') {
         event.preventDefault();
         composerRef.current?.focus();
+      } else if (event.key === '1') {
+        setDisplayMode('list');
+      } else if (event.key === '2') {
+        setDisplayMode('kanban');
+      } else if (event.key === '3') {
+        setDisplayMode('calendar');
+      } else if (event.key === '?') {
+        event.preventDefault();
+        setShowShortcuts((prev) => !prev);
       }
     }
     window.addEventListener('keydown', handleShortcut);
@@ -182,6 +225,11 @@ export function App() {
     };
   }, [todos, todayStr]);
 
+  const totalFocusMinutes = useMemo(
+    () => todos.reduce((sum, item) => sum + (item.focusMinutes ?? 0), 0),
+    [todos]
+  );
+
   const categories = useMemo(() => {
     const map = new Map<string, number>();
     for (const item of todos) {
@@ -199,7 +247,7 @@ export function App() {
     const matched = todos.filter((item) => {
       if (selectedCategory) {
         if (item.category !== selectedCategory) return false;
-      } else {
+      } else if (displayMode === 'list') {
         if (activeView === 'today') {
           if (item.status === 'done') return false;
           const isDueOrOverdue = Boolean(item.dueDate && item.dueDate <= todayStr);
@@ -218,12 +266,13 @@ export function App() {
       return (
         item.title.toLowerCase().includes(q) ||
         item.notes.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q)
+        item.category.toLowerCase().includes(q) ||
+        item.subtasks.some((st) => st.title.toLowerCase().includes(q))
       );
     });
 
     return [...matched].sort((a, b) => {
-      if (activeView !== 'done') {
+      if (activeView !== 'done' && displayMode === 'list') {
         const aDone = a.status === 'done' ? 1 : 0;
         const bDone = b.status === 'done' ? 1 : 0;
         if (aDone !== bDone) return aDone - bDone;
@@ -239,11 +288,20 @@ export function App() {
       } else if (sortMode === 'priority') {
         const diff = PRIORITY_WEIGHT[b.priority] - PRIORITY_WEIGHT[a.priority];
         if (diff !== 0) return diff;
+      } else {
+        if (a.sortOrder !== b.sortOrder) {
+          return a.sortOrder - b.sortOrder;
+        }
       }
 
       return b.createdAt.localeCompare(a.createdAt);
     });
-  }, [todos, selectedCategory, activeView, todayStr, searchQuery, sortMode]);
+  }, [todos, selectedCategory, activeView, displayMode, todayStr, searchQuery, sortMode]);
+
+  const activeFocusTodo = useMemo(
+    () => (focusTodoId ? todos.find((t) => t.id === focusTodoId) ?? null : null),
+    [focusTodoId, todos]
+  );
 
   async function handleCreateTodo(input: CreateTodoInput) {
     try {
@@ -259,18 +317,27 @@ export function App() {
     }
   }
 
-  async function handleUpdateTodo(id: string, patch: UpdateTodoInput) {
-    try {
-      const updated = await updateTodoApi(id, patch);
-      setTodos((prev) => prev.map((item) => (item.id === id ? updated : item)));
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        setAuth((prev) => (prev ? { ...prev, authenticated: false, authMethod: null } : prev));
-        return;
+  const handleUpdateTodo = useCallback(
+    async (id: string, patch: UpdateTodoInput) => {
+      try {
+        const { item: updated, nextItem } = await updateTodoApi(id, patch);
+        setTodos((prev) => {
+          const replaced = prev.map((item) => (item.id === id ? updated : item));
+          return nextItem ? [nextItem, ...replaced] : replaced;
+        });
+        if (nextItem) {
+          showToast(`다음 반복 일정(${nextItem.dueDate ?? '예정'})이 자동 생성되었습니다.`);
+        }
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          setAuth((prev) => (prev ? { ...prev, authenticated: false, authMethod: null } : prev));
+          return;
+        }
+        showToast(err instanceof Error ? err.message : '수정하지 못했습니다.');
       }
-      showToast(err instanceof Error ? err.message : '수정하지 못했습니다.');
-    }
-  }
+    },
+    [showToast]
+  );
 
   function handleToggleDone(todo: TodoModel) {
     const nextStatus: TodoStatus = todo.status === 'done' ? 'todo' : 'done';
@@ -287,8 +354,69 @@ export function App() {
     void handleUpdateTodo(todo.id, { pinned: !todo.pinned });
   }
 
+  function handleUpdateSubtasks(todo: TodoModel, subtasks: SubtaskItem[]) {
+    void handleUpdateTodo(todo.id, { subtasks });
+  }
+
+  function handleStartFocus(todo: TodoModel) {
+    setFocusTodoId(todo.id);
+    setPomoOpen(true);
+  }
+
+  const handleCompleteFocusSession = useCallback(
+    (todo: TodoModel | null, minutes: number) => {
+      if (todo) {
+        void handleUpdateTodo(todo.id, { focusMinutes: (todo.focusMinutes ?? 0) + minutes });
+        showToast(`"${todo.title}" ${minutes}분 집중 완료!`);
+      } else {
+        showToast(`${minutes}분 집중 세션을 완료했습니다!`);
+      }
+    },
+    [handleUpdateTodo, showToast]
+  );
+
+  function handleDragOverItem(event: DragEvent, targetId: string) {
+    event.preventDefault();
+    if (dragOverId !== targetId) setDragOverId(targetId);
+  }
+
+  async function handleDropReorder(targetId: string) {
+    if (!draggingId || draggingId === targetId) {
+      setDraggingId(null);
+      setDragOverId(null);
+      return;
+    }
+
+    const currentOrder = filteredTodos.map((t) => t.id);
+    const fromIdx = currentOrder.indexOf(draggingId);
+    const toIdx = currentOrder.indexOf(targetId);
+    if (fromIdx === -1 || toIdx === -1) {
+      setDraggingId(null);
+      setDragOverId(null);
+      return;
+    }
+
+    const reordered = [...currentOrder];
+    const [moved] = reordered.splice(fromIdx, 1);
+    reordered.splice(toIdx, 0, moved);
+
+    const orderMap = new Map(reordered.map((id, idx) => [id, idx + 1]));
+    setTodos((prev) =>
+      prev.map((item) => (orderMap.has(item.id) ? { ...item, sortOrder: orderMap.get(item.id)! } : item))
+    );
+    setDraggingId(null);
+    setDragOverId(null);
+
+    try {
+      await reorderTodosApi(reordered);
+    } catch {
+      showToast('순서 저장에 실패했습니다.');
+    }
+  }
+
   async function handleDeleteTodo(todo: TodoModel) {
     setTodos((prev) => prev.filter((item) => item.id !== todo.id));
+    if (focusTodoId === todo.id) setFocusTodoId(null);
     try {
       await deleteTodoApi(todo.id);
       showToast(`"${todo.title}" 삭제됨`, {
@@ -299,6 +427,9 @@ export function App() {
         category: todo.category,
         dueDate: todo.dueDate,
         pinned: todo.pinned,
+        subtasks: todo.subtasks,
+        recurrence: todo.recurrence,
+        focusMinutes: todo.focusMinutes,
       });
     } catch (err) {
       setTodos((prev) => [todo, ...prev]);
@@ -319,7 +450,7 @@ export function App() {
 
   function handleExportBackup() {
     const payload = {
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       items: todos.map((item) => ({
         title: item.title,
@@ -329,6 +460,9 @@ export function App() {
         category: item.category,
         dueDate: item.dueDate,
         pinned: item.pinned,
+        subtasks: item.subtasks,
+        recurrence: item.recurrence,
+        focusMinutes: item.focusMinutes,
       })),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -364,6 +498,7 @@ export function App() {
     } finally {
       setTodos([]);
       setEditingTodo(null);
+      setPomoOpen(false);
       setAuth((prev) => (prev ? { ...prev, authenticated: false, authMethod: null } : prev));
     }
   }
@@ -379,6 +514,8 @@ export function App() {
   if (!auth?.authenticated) {
     return (
       <LockScreen
+        desktopMode={Boolean(auth?.desktopMode)}
+        localPasscodeEnabled={Boolean(auth?.localPasscodeEnabled)}
         emailOtpReady={Boolean(auth?.emailOtpReady)}
         cfAccessEnabled={Boolean(auth?.cfAccessEnabled)}
         onUnlocked={() => void refreshAuth()}
@@ -388,7 +525,13 @@ export function App() {
 
   const headerInfo = selectedCategory
     ? { title: `# ${selectedCategory}`, subtitle: `'${selectedCategory}' 카테고리의 할 일 목록입니다.` }
-    : VIEW_TITLES[activeView];
+    : displayMode === 'kanban'
+      ? { title: '칸반 보드', subtitle: '카드를 드래그해서 진행 상태를 바로 옮길 수 있습니다.' }
+      : displayMode === 'calendar'
+        ? { title: '일정 캘린더', subtitle: '마감일 기준으로 월별 일정을 한눈에 확인합니다.' }
+        : VIEW_TITLES[activeView];
+
+  const canDragReorder = displayMode === 'list' && sortMode === 'default' && !searchQuery.trim();
 
   return (
     <div className="app-layout">
@@ -398,21 +541,32 @@ export function App() {
         counts={counts}
         totalCount={todos.length}
         doneCount={counts.done}
+        totalFocusMinutes={totalFocusMinutes}
         categories={categories}
         theme={theme}
         authMethod={auth.authMethod}
         userEmail={auth.userEmail}
+        desktopMode={Boolean(auth.desktopMode)}
+        localPasscodeEnabled={Boolean(auth.localPasscodeEnabled)}
+        isDesktopCloud={isDesktopApp() && !isLocalDesktopMode()}
         mobileOpen={mobileMenuOpen}
         onCloseMobile={() => setMobileMenuOpen(false)}
-        onSelectView={setActiveView}
+        onSelectView={(view) => {
+          setActiveView(view);
+          setDisplayMode('list');
+        }}
         onSelectCategory={setSelectedCategory}
+        onOpenPomodoro={() => setPomoOpen((prev) => !prev)}
+        onOpenShortcuts={() => setShowShortcuts(true)}
+        onOpenDesktopSecurity={() => setShowDesktopSecurity(true)}
+        onSwitchToLocalVault={() => void switchDesktopToLocalApi()}
         onToggleTheme={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
         onExportBackup={handleExportBackup}
         onImportBackup={(file) => void handleImportBackup(file)}
         onLockNow={() => void handleLockNow()}
       />
 
-      <main className="workspace">
+      <main className={`workspace ${displayMode !== 'list' ? 'workspace-wide' : ''}`}>
         <header className="workspace-header">
           <div className="header-left">
             <button
@@ -430,13 +584,49 @@ export function App() {
           </div>
 
           <div className="header-controls">
+            <div className="view-switcher" role="tablist" aria-label="화면 전환">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={displayMode === 'list'}
+                className={`view-tab ${displayMode === 'list' ? 'is-active' : ''}`}
+                onClick={() => setDisplayMode('list')}
+                title="리스트 보기 (단축키 1)"
+              >
+                <List size={14} />
+                <span>리스트</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={displayMode === 'kanban'}
+                className={`view-tab ${displayMode === 'kanban' ? 'is-active' : ''}`}
+                onClick={() => setDisplayMode('kanban')}
+                title="칸반 보드 (단축키 2)"
+              >
+                <Columns3 size={14} />
+                <span>칸반</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={displayMode === 'calendar'}
+                className={`view-tab ${displayMode === 'calendar' ? 'is-active' : ''}`}
+                onClick={() => setDisplayMode('calendar')}
+                title="캘린더 보기 (단축키 3)"
+              >
+                <CalendarDays size={14} />
+                <span>캘린더</span>
+              </button>
+            </div>
+
             <div className="search-box">
               <Search size={15} />
               <input
                 ref={searchRef}
                 type="text"
                 className="search-input"
-                placeholder="검색 (단축키 /)"
+                placeholder="검색 (/)"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
@@ -452,21 +642,23 @@ export function App() {
               )}
             </div>
 
-            <div className="sort-box">
-              <ArrowUpDown size={14} />
-              <select
-                className="sort-select"
-                value={sortMode}
-                onChange={(e) => setSortMode(e.target.value as SortMode)}
-                aria-label="정렬 기준"
-              >
-                <option value="default">최신순</option>
-                <option value="dueDate">마감일순</option>
-                <option value="priority">우선순위순</option>
-              </select>
-            </div>
+            {displayMode === 'list' && (
+              <div className="sort-box">
+                <ArrowUpDown size={14} />
+                <select
+                  className="sort-select"
+                  value={sortMode}
+                  onChange={(e) => setSortMode(e.target.value as SortMode)}
+                  aria-label="정렬 기준"
+                >
+                  <option value="default">직접 정렬</option>
+                  <option value="dueDate">마감일순</option>
+                  <option value="priority">우선순위순</option>
+                </select>
+              </div>
+            )}
 
-            {activeView === 'done' && counts.done > 0 && (
+            {displayMode === 'list' && activeView === 'done' && counts.done > 0 && (
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -486,36 +678,78 @@ export function App() {
           onCreate={handleCreateTodo}
         />
 
-        <section className="todo-list-section" aria-label="할 일 목록">
-          {loadingTodos ? (
-            <div className="empty-state">불러오는 중...</div>
-          ) : filteredTodos.length === 0 ? (
-            <div className="empty-state">
-              <Sparkles size={26} />
-              <p>
-                {searchQuery
-                  ? `"${searchQuery}"에 해당하는 할 일이 없습니다.`
-                  : '표시할 할 일이 없습니다. 위 입력창에서 새 할 일을 추가해 보세요.'}
-              </p>
-            </div>
-          ) : (
-            <div className="todo-list">
-              {filteredTodos.map((todo) => (
-                <TodoItem
-                  key={todo.id}
-                  todo={todo}
-                  todayStr={todayStr}
-                  onToggleDone={handleToggleDone}
-                  onCycleStatus={handleCycleStatus}
-                  onTogglePin={handleTogglePin}
-                  onEdit={setEditingTodo}
-                  onDelete={(item) => void handleDeleteTodo(item)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
+        {loadingTodos ? (
+          <div className="empty-state">불러오는 중...</div>
+        ) : displayMode === 'kanban' ? (
+          <KanbanBoard
+            todos={filteredTodos}
+            todayStr={todayStr}
+            defaultCategory={selectedCategory}
+            focusTodoId={focusTodoId}
+            onChangeStatus={(todo, status) => void handleUpdateTodo(todo.id, { status })}
+            onCreate={handleCreateTodo}
+            onStartFocus={handleStartFocus}
+            onEdit={setEditingTodo}
+          />
+        ) : displayMode === 'calendar' ? (
+          <CalendarView
+            todos={filteredTodos}
+            todayStr={todayStr}
+            defaultCategory={selectedCategory}
+            onCreate={handleCreateTodo}
+            onToggleDone={handleToggleDone}
+            onEdit={setEditingTodo}
+          />
+        ) : (
+          <section className="todo-list-section" aria-label="할 일 목록">
+            {filteredTodos.length === 0 ? (
+              <div className="empty-state">
+                <Sparkles size={26} />
+                <p>
+                  {searchQuery
+                    ? `"${searchQuery}"에 해당하는 할 일이 없습니다.`
+                    : '표시할 할 일이 없습니다. 위 입력창에서 새 할 일을 추가해 보세요.'}
+                </p>
+              </div>
+            ) : (
+              <div className="todo-list">
+                {filteredTodos.map((todo) => (
+                  <TodoItem
+                    key={todo.id}
+                    todo={todo}
+                    todayStr={todayStr}
+                    draggable={canDragReorder}
+                    isDragOver={dragOverId === todo.id && draggingId !== todo.id}
+                    isFocusing={pomoOpen && focusTodoId === todo.id}
+                    onDragStart={setDraggingId}
+                    onDragOver={handleDragOverItem}
+                    onDrop={(id) => void handleDropReorder(id)}
+                    onDragEnd={() => {
+                      setDraggingId(null);
+                      setDragOverId(null);
+                    }}
+                    onToggleDone={handleToggleDone}
+                    onCycleStatus={handleCycleStatus}
+                    onTogglePin={handleTogglePin}
+                    onUpdateSubtasks={handleUpdateSubtasks}
+                    onStartFocus={handleStartFocus}
+                    onEdit={setEditingTodo}
+                    onDelete={(item) => void handleDeleteTodo(item)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
       </main>
+
+      {pomoOpen && (
+        <PomodoroWidget
+          activeTodo={activeFocusTodo}
+          onCompleteFocusSession={handleCompleteFocusSession}
+          onClose={() => setPomoOpen(false)}
+        />
+      )}
 
       {editingTodo && (
         <TodoEditModal
@@ -525,6 +759,91 @@ export function App() {
           onSave={handleUpdateTodo}
           onDelete={handleDeleteTodo}
         />
+      )}
+
+      {showDesktopSecurity && (
+        <DesktopSecurityModal
+          localPasscodeEnabled={Boolean(auth.localPasscodeEnabled)}
+          encryptionLabel={auth.encryptionLabel ?? 'AES-256-GCM 로컬 암호화'}
+          onClose={() => setShowDesktopSecurity(false)}
+          onChanged={(msg) => {
+            showToast(msg);
+            void refreshAuth();
+          }}
+        />
+      )}
+
+      {showShortcuts && (
+        <div
+          className="modal-backdrop"
+          onClick={() => setShowShortcuts(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="modal-card shortcuts-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>단축키 · 빠른 자연어 입력</h2>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setShowShortcuts(false)}
+                aria-label="닫기"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="shortcuts-section">
+              <h3>키보드 단축키</h3>
+              <ul className="shortcuts-list">
+                <li>
+                  <span>새 할 일 입력</span>
+                  <kbd>N</kbd>
+                </li>
+                <li>
+                  <span>검색창 이동</span>
+                  <kbd>/</kbd>
+                </li>
+                <li>
+                  <span>리스트 / 칸반 / 캘린더 전환</span>
+                  <span>
+                    <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd>
+                  </span>
+                </li>
+                <li>
+                  <span>이 도움말 열기</span>
+                  <kbd>?</kbd>
+                </li>
+              </ul>
+            </div>
+
+            <div className="shortcuts-section">
+              <h3>빠른 자연어 입력 문법</h3>
+              <ul className="shortcuts-list">
+                <li>
+                  <span>카테고리 자동 지정</span>
+                  <code>#업무</code>
+                </li>
+                <li>
+                  <span>우선순위 지정</span>
+                  <code>!높음 / p1 / p2 / p3</code>
+                </li>
+                <li>
+                  <span>마감일 자동 지정</span>
+                  <code>오늘 / 내일 / 모레 / 다음주 / 2026-12-01</code>
+                </li>
+                <li>
+                  <span>반복 일정 설정</span>
+                  <code>매일 / 매주 / 매월</code>
+                </li>
+                <li>
+                  <span>상단 고정</span>
+                  <code>*고정</code>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && (

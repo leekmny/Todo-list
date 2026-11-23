@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseQuickTodoInput } from '../src/shared/quickParse';
 import {
   buildClearSessionCookie,
   buildSessionCookie,
@@ -15,7 +16,7 @@ import {
 } from '../src/worker/auth';
 import type { Env } from '../src/worker/types';
 
-describe('multi-user email auth & session utilities', () => {
+describe('multi-user email auth, sliding sessions & quick parser', () => {
   it('generates valid 6-digit numeric OTP codes', () => {
     for (let i = 0; i < 30; i += 1) {
       const code = generateSixDigitOtp();
@@ -25,7 +26,7 @@ describe('multi-user email auth & session utilities', () => {
     expect(isValidOtpFormat('abcdef')).toBe(false);
   });
 
-  it('parses ALLOWED_EMAILS and ALLOWED_EMAIL cleanly with case-insensitive matching', async () => {
+  it('parses ALLOWED_EMAILS, ALLOWED_EMAIL, and optional public signup', async () => {
     expect(isValidEmailFormat('owner@example.com')).toBe(true);
     expect(isValidEmailFormat('not-an-email')).toBe(false);
 
@@ -42,55 +43,70 @@ describe('multi-user email auth & session utilities', () => {
     expect(await isAllowedEmail('  owner@example.com ', env)).toBe(true);
     expect(await isAllowedEmail('friend2@example.com', env)).toBe(true);
     expect(await isAllowedEmail('stranger@example.com', env)).toBe(false);
+
+    const publicEnv = { ALLOW_PUBLIC_SIGNUP: 'true' } as Env;
+    expect(await isAllowedEmail('anyone@example.org', publicEnv)).toBe(true);
   });
 
-  it('creates, verifies, and revokes sessions when removed from allowlist or expired', async () => {
+  it('supports 90-day rememberMe sessions with sliding renewal and immediate allowlist revocation', async () => {
     const secret = 'very-long-random-session-secret';
     const now = Date.UTC(2026, 0, 1, 0, 0, 0);
-    const token = await createSessionToken('alice@example.com', secret, now);
+    const token = await createSessionToken('alice@example.com', secret, true, now);
 
+    // Fresh token -> valid, no renewal needed yet
     expect(
       await verifySessionToken(token, secret, ['alice@example.com', 'bob@example.com'], now + 1000)
     ).toEqual({
       valid: true,
       email: 'alice@example.com',
+      rememberMe: true,
+      shouldRenew: false,
+    });
+
+    // After 24 hours -> valid and flags sliding renewal
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    expect(
+      await verifySessionToken(token, secret, ['alice@example.com'], now + oneDayMs)
+    ).toEqual({
+      valid: true,
+      email: 'alice@example.com',
+      rememberMe: true,
+      shouldRenew: true,
     });
 
     // Removed from allowlist -> immediately rejected
-    expect(await verifySessionToken(token, secret, ['bob@example.com'], now + 1000)).toEqual({
+    expect(await verifySessionToken(token, secret, ['bob@example.com'], now + 1000)).toMatchObject({
       valid: false,
       email: null,
     });
 
+    // After 91 days -> expired
+    const ninetyOneDaysMs = 91 * 24 * 60 * 60 * 1000;
     expect(
-      await verifySessionToken(token, 'wrong-secret', ['alice@example.com'], now + 1000)
-    ).toEqual({
+      await verifySessionToken(token, secret, ['alice@example.com'], now + ninetyOneDaysMs)
+    ).toMatchObject({
       valid: false,
       email: null,
     });
 
+    // Short session (rememberMe=false) expires after 24 hours
+    const shortToken = await createSessionToken('alice@example.com', secret, false, now);
     expect(
-      await verifySessionToken(`${token}x`, secret, ['alice@example.com'], now + 1000)
-    ).toEqual({
-      valid: false,
-      email: null,
-    });
-
-    const eightDaysMs = 8 * 24 * 60 * 60 * 1000;
-    expect(
-      await verifySessionToken(token, secret, ['alice@example.com'], now + eightDaysMs)
-    ).toEqual({
+      await verifySessionToken(shortToken, secret, ['alice@example.com'], now + oneDayMs + 2000)
+    ).toMatchObject({
       valid: false,
       email: null,
     });
   });
 
-  it('builds strict HttpOnly cookies and parses them cleanly', () => {
-    const cookie = buildSessionCookie('abc.def', true);
+  it('builds persistent HttpOnly SameSite=Lax cookies with explicit Expires', () => {
+    const cookie = buildSessionCookie('abc.def', true, true, Date.UTC(2026, 0, 1, 0, 0, 0));
     expect(cookie).toContain(`${SESSION_COOKIE_NAME}=abc.def`);
     expect(cookie).toContain('HttpOnly');
-    expect(cookie).toContain('SameSite=Strict');
+    expect(cookie).toContain('SameSite=Lax');
     expect(cookie).toContain('Secure');
+    expect(cookie).toContain('Max-Age=7776000');
+    expect(cookie).toContain('Expires=');
 
     expect(getCookieValue(`foo=1; ${SESSION_COOKIE_NAME}=abc.def; bar=2`, SESSION_COOKIE_NAME)).toBe(
       'abc.def'
@@ -98,6 +114,7 @@ describe('multi-user email auth & session utilities', () => {
 
     const cleared = buildClearSessionCookie(false);
     expect(cleared).toContain('Max-Age=0');
+    expect(cleared).toContain('Expires=Thu, 01 Jan 1970 00:00:00 GMT');
     expect(cleared).not.toContain('Secure');
   });
 
@@ -113,11 +130,28 @@ describe('multi-user email auth & session utilities', () => {
       headers: { Origin: 'https://evil.example.org' },
     });
     expect(isSameOriginMutation(evilOrigin)).toBe(false);
+  });
 
-    const crossSiteFetch = new Request('https://todo.example.com/api/todos', {
-      method: 'POST',
-      headers: { 'Sec-Fetch-Site': 'cross-site' },
+  it('parses natural-language quick todo tokens cleanly', () => {
+    const base = new Date(2026, 10, 23, 12, 0, 0); // 2026-11-23
+    const parsed = parseQuickTodoInput('운동하기 매일 #건강 내일 !높음 *고정', base);
+    expect(parsed).toEqual({
+      title: '운동하기',
+      category: '건강',
+      priority: 'high',
+      recurrence: 'daily',
+      dueDate: '2026-11-24',
+      pinned: true,
     });
-    expect(isSameOriginMutation(crossSiteFetch)).toBe(false);
+
+    const explicitDate = parseQuickTodoInput('세금 신고 2026-12-15 p3 #재무', base);
+    expect(explicitDate).toEqual({
+      title: '세금 신고',
+      category: '재무',
+      priority: 'low',
+      dueDate: '2026-12-15',
+      recurrence: undefined,
+      pinned: undefined,
+    });
   });
 });

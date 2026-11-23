@@ -4,6 +4,7 @@ import {
   Clock,
   Download,
   Inbox,
+  Keyboard,
   Lock,
   LogOut,
   Mail,
@@ -12,6 +13,7 @@ import {
   Star,
   Sun,
   Tag,
+  Timer,
   Upload,
   X,
 } from 'lucide-react';
@@ -29,14 +31,22 @@ interface SidebarProps {
   counts: Record<SmartView, number>;
   totalCount: number;
   doneCount: number;
+  totalFocusMinutes: number;
   categories: CategoryCount[];
   theme: 'dark' | 'light';
-  authMethod: 'email-otp' | 'cf-access' | null;
+  authMethod: 'email-otp' | 'cf-access' | 'local-vault' | null;
   userEmail: string | null;
+  desktopMode?: boolean;
+  localPasscodeEnabled?: boolean;
+  isDesktopCloud?: boolean;
   mobileOpen: boolean;
   onCloseMobile: () => void;
   onSelectView: (view: SmartView) => void;
   onSelectCategory: (category: string | null) => void;
+  onOpenPomodoro: () => void;
+  onOpenShortcuts: () => void;
+  onOpenDesktopSecurity?: () => void;
+  onSwitchToLocalVault?: () => void;
   onToggleTheme: () => void;
   onExportBackup: () => void;
   onImportBackup: (file: File) => void;
@@ -57,14 +67,22 @@ export function Sidebar({
   counts,
   totalCount,
   doneCount,
+  totalFocusMinutes,
   categories,
   theme,
   authMethod,
   userEmail,
+  desktopMode = false,
+  localPasscodeEnabled = false,
+  isDesktopCloud = false,
   mobileOpen,
   onCloseMobile,
   onSelectView,
   onSelectCategory,
+  onOpenPomodoro,
+  onOpenShortcuts,
+  onOpenDesktopSecurity,
+  onSwitchToLocalVault,
   onToggleTheme,
   onExportBackup,
   onImportBackup,
@@ -115,6 +133,7 @@ export function Sidebar({
             <div className="progress-meta">
               <span>남음 {totalCount - doneCount}</span>
               <span>완료 {doneCount}</span>
+              {totalFocusMinutes > 0 && <span>집중 {totalFocusMinutes}분</span>}
             </div>
           </div>
         </div>
@@ -143,6 +162,67 @@ export function Sidebar({
                 </li>
               );
             })}
+          </ul>
+
+          <div className="nav-section-label">도구</div>
+          <ul className="nav-list">
+            <li>
+              <button
+                type="button"
+                className="nav-item"
+                onClick={() => {
+                  onOpenPomodoro();
+                  onCloseMobile();
+                }}
+              >
+                <Timer size={16} />
+                <span className="nav-item-label">뽀모도로 타이머</span>
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className="nav-item"
+                onClick={() => {
+                  onOpenShortcuts();
+                  onCloseMobile();
+                }}
+              >
+                <Keyboard size={16} />
+                <span className="nav-item-label">단축키 · 빠른 입력</span>
+                <span className="nav-count">?</span>
+              </button>
+            </li>
+            {desktopMode && onOpenDesktopSecurity && (
+              <li>
+                <button
+                  type="button"
+                  className="nav-item"
+                  onClick={() => {
+                    onOpenDesktopSecurity();
+                    onCloseMobile();
+                  }}
+                >
+                  <ShieldCheck size={16} />
+                  <span className="nav-item-label">보안 · 클라우드 연결</span>
+                </button>
+              </li>
+            )}
+            {isDesktopCloud && onSwitchToLocalVault && (
+              <li>
+                <button
+                  type="button"
+                  className="nav-item"
+                  onClick={() => {
+                    onSwitchToLocalVault();
+                    onCloseMobile();
+                  }}
+                >
+                  <Lock size={16} />
+                  <span className="nav-item-label">로컬 보관함으로 전환</span>
+                </button>
+              </li>
+            )}
           </ul>
 
           {categories.length > 0 && (
@@ -223,10 +303,17 @@ export function Sidebar({
               <ShieldCheck size={14} />
               <span>Access 로그아웃</span>
             </a>
+          ) : authMethod === 'local-vault' ? (
+            localPasscodeEnabled ? (
+              <button type="button" className="btn btn-lock" onClick={onLockNow}>
+                <Lock size={14} />
+                <span>보관함 잠금</span>
+              </button>
+            ) : null
           ) : (
             <button type="button" className="btn btn-lock" onClick={onLockNow}>
               <LogOut size={14} />
-              <span>지금 잠금</span>
+              <span>로그아웃</span>
             </button>
           )}
         </div>

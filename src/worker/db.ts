@@ -1,7 +1,9 @@
 import type {
   CreateTodoInput,
+  SubtaskItem,
   TodoItem,
   TodoPriority,
+  TodoRecurrence,
   TodoStatus,
   UpdateTodoInput,
 } from '../shared/types';
@@ -17,6 +19,10 @@ interface TodoRow {
   category: string;
   due_date: string | null;
   pinned: number;
+  subtasks: string | null;
+  recurrence: TodoRecurrence | null;
+  sort_order: number | null;
+  focus_minutes: number | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -35,6 +41,10 @@ const BASE_SCHEMA_STATEMENTS = [
     category TEXT NOT NULL DEFAULT '',
     due_date TEXT,
     pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+    subtasks TEXT NOT NULL DEFAULT '[]',
+    recurrence TEXT NOT NULL DEFAULT 'none' CHECK (recurrence IN ('none', 'daily', 'weekly', 'monthly')),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    focus_minutes INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT
@@ -62,12 +72,76 @@ const INDEX_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_todos_owner_status ON todos(owner_email, status)`,
 ];
 
+const OPTIONAL_COLUMNS: ReadonlyArray<{ name: string; alterSql: string }> = [
+  { name: 'owner_email', alterSql: "ALTER TABLE todos ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''" },
+  { name: 'subtasks', alterSql: "ALTER TABLE todos ADD COLUMN subtasks TEXT NOT NULL DEFAULT '[]'" },
+  {
+    name: 'recurrence',
+    alterSql:
+      "ALTER TABLE todos ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none' CHECK (recurrence IN ('none', 'daily', 'weekly', 'monthly'))",
+  },
+  { name: 'sort_order', alterSql: 'ALTER TABLE todos ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0' },
+  { name: 'focus_minutes', alterSql: 'ALTER TABLE todos ADD COLUMN focus_minutes INTEGER NOT NULL DEFAULT 0' },
+];
+
+const SELECT_COLUMNS =
+  'id, owner_email, title, notes, status, priority, category, due_date, pinned, subtasks, recurrence, sort_order, focus_minutes, created_at, updated_at, completed_at';
+
 function requireOwnerEmail(ownerEmail: string): string {
   const normalized = normalizeEmail(ownerEmail);
   if (!normalized) {
     throw new Error('Authenticated owner email is required for database operations.');
   }
   return normalized;
+}
+
+function parseSubtasksJson(raw: string | null | undefined): SubtaskItem[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => item && typeof item === 'object' && typeof item.title === 'string')
+      .map((item) => ({
+        id: typeof item.id === 'string' && item.id ? item.id : crypto.randomUUID(),
+        title: String(item.title),
+        done: Boolean(item.done),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function computeNextRecurrenceDate(baseDate: string | null, recurrence: TodoRecurrence): string | null {
+  if (recurrence === 'none') return null;
+
+  const base =
+    baseDate && /^\d{4}-\d{2}-\d{2}$/.test(baseDate)
+      ? (() => {
+          const [y, m, d] = baseDate.split('-').map(Number);
+          return new Date(Date.UTC(y, m - 1, d));
+        })()
+      : (() => {
+          const now = new Date();
+          return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        })();
+
+  if (recurrence === 'daily') {
+    base.setUTCDate(base.getUTCDate() + 1);
+  } else if (recurrence === 'weekly') {
+    base.setUTCDate(base.getUTCDate() + 7);
+  } else if (recurrence === 'monthly') {
+    const origDay = base.getUTCDate();
+    base.setUTCDate(1);
+    base.setUTCMonth(base.getUTCMonth() + 1);
+    const maxDay = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + 1, 0)).getUTCDate();
+    base.setUTCDate(Math.min(origDay, maxDay));
+  }
+
+  const y = base.getUTCFullYear();
+  const m = String(base.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(base.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function mapRow(row: TodoRow): TodoItem {
@@ -80,6 +154,10 @@ function mapRow(row: TodoRow): TodoItem {
     category: row.category,
     dueDate: row.due_date,
     pinned: row.pinned === 1,
+    subtasks: parseSubtasksJson(row.subtasks),
+    recurrence: row.recurrence ?? 'none',
+    sortOrder: row.sort_order ?? 0,
+    focusMinutes: row.focus_minutes ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at,
@@ -91,15 +169,18 @@ export async function ensureSchema(db: D1Database): Promise<void> {
 
   await db.batch(BASE_SCHEMA_STATEMENTS.map((sql) => db.prepare(sql)));
 
-  // Upgrade older databases created before migration 0002_multi_user.sql
   try {
     const info = await db.prepare('PRAGMA table_info(todos)').all<{ name: string }>();
-    const hasOwnerColumn = (info.results ?? []).some((col) => col.name === 'owner_email');
-    if (info.results && info.results.length > 0 && !hasOwnerColumn) {
-      await db.prepare("ALTER TABLE todos ADD COLUMN owner_email TEXT NOT NULL DEFAULT ''").run();
+    if (info.results && info.results.length > 0) {
+      const existing = new Set(info.results.map((col) => col.name));
+      for (const col of OPTIONAL_COLUMNS) {
+        if (!existing.has(col.name)) {
+          await db.prepare(col.alterSql).run();
+        }
+      }
     }
   } catch {
-    // Ignore if runtime mock does not implement PRAGMA table_info
+    // Ignore if mock DB does not support PRAGMA table_info
   }
 
   await db.batch(INDEX_STATEMENTS.map((sql) => db.prepare(sql)));
@@ -110,10 +191,10 @@ export async function listTodos(db: D1Database, ownerEmail: string): Promise<Tod
   const owner = requireOwnerEmail(ownerEmail);
   const { results } = await db
     .prepare(
-      `SELECT id, owner_email, title, notes, status, priority, category, due_date, pinned, created_at, updated_at, completed_at
+      `SELECT ${SELECT_COLUMNS}
        FROM todos
        WHERE owner_email = ?
-       ORDER BY pinned DESC, created_at DESC`
+       ORDER BY pinned DESC, sort_order ASC, created_at DESC`
     )
     .bind(owner)
     .all<TodoRow>();
@@ -129,7 +210,7 @@ export async function getTodoById(
   const owner = requireOwnerEmail(ownerEmail);
   const row = await db
     .prepare(
-      `SELECT id, owner_email, title, notes, status, priority, category, due_date, pinned, created_at, updated_at, completed_at
+      `SELECT ${SELECT_COLUMNS}
        FROM todos
        WHERE id = ? AND owner_email = ?`
     )
@@ -153,12 +234,16 @@ export async function createTodo(
   const category = input.category ?? '';
   const dueDate = input.dueDate ?? null;
   const pinned = input.pinned ? 1 : 0;
+  const subtasks = input.subtasks ?? [];
+  const recurrence = input.recurrence ?? 'none';
+  const sortOrder = 0;
+  const focusMinutes = input.focusMinutes ?? 0;
   const completedAt = status === 'done' ? now : null;
 
   await db
     .prepare(
-      `INSERT INTO todos (id, owner_email, title, notes, status, priority, category, due_date, pinned, created_at, updated_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO todos (id, owner_email, title, notes, status, priority, category, due_date, pinned, subtasks, recurrence, sort_order, focus_minutes, created_at, updated_at, completed_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id,
@@ -170,6 +255,10 @@ export async function createTodo(
       category,
       dueDate,
       pinned,
+      JSON.stringify(subtasks),
+      recurrence,
+      sortOrder,
+      focusMinutes,
       now,
       now,
       completedAt
@@ -185,6 +274,10 @@ export async function createTodo(
     category,
     dueDate,
     pinned: pinned === 1,
+    subtasks,
+    recurrence,
+    sortOrder,
+    focusMinutes,
     createdAt: now,
     updatedAt: now,
     completedAt,
@@ -196,7 +289,7 @@ export async function updateTodo(
   ownerEmail: string,
   id: string,
   patch: UpdateTodoInput
-): Promise<TodoItem | null> {
+): Promise<{ item: TodoItem; nextItem: TodoItem | null } | null> {
   const owner = requireOwnerEmail(ownerEmail);
   const existing = await getTodoById(db, owner, id);
   if (!existing) return null;
@@ -209,20 +302,29 @@ export async function updateTodo(
   const nextCategory = patch.category ?? existing.category;
   const nextDueDate = patch.dueDate !== undefined ? patch.dueDate : existing.dueDate;
   const nextPinned = patch.pinned !== undefined ? patch.pinned : existing.pinned;
+  const nextSubtasks = patch.subtasks ?? existing.subtasks;
+  const nextRecurrence = patch.recurrence ?? existing.recurrence;
+  const nextSortOrder = patch.sortOrder ?? existing.sortOrder;
+  const nextFocusMinutes = patch.focusMinutes ?? existing.focusMinutes;
 
+  const transitionedToDone = patch.status === 'done' && existing.status !== 'done';
   let nextCompletedAt = existing.completedAt;
   if (patch.status !== undefined) {
-    if (nextStatus === 'done' && existing.status !== 'done') {
+    if (transitionedToDone) {
       nextCompletedAt = now;
     } else if (nextStatus !== 'done') {
       nextCompletedAt = null;
     }
   }
 
+  // If a recurring task is completed, spawn the next scheduled occurrence and clear recurrence on the archived one
+  const shouldSpawnRecurring = transitionedToDone && nextRecurrence !== 'none';
+  const storedRecurrenceOnCompleted: TodoRecurrence = shouldSpawnRecurring ? 'none' : nextRecurrence;
+
   await db
     .prepare(
       `UPDATE todos
-       SET title = ?, notes = ?, status = ?, priority = ?, category = ?, due_date = ?, pinned = ?, updated_at = ?, completed_at = ?
+       SET title = ?, notes = ?, status = ?, priority = ?, category = ?, due_date = ?, pinned = ?, subtasks = ?, recurrence = ?, sort_order = ?, focus_minutes = ?, updated_at = ?, completed_at = ?
        WHERE id = ? AND owner_email = ?`
     )
     .bind(
@@ -233,6 +335,10 @@ export async function updateTodo(
       nextCategory,
       nextDueDate,
       nextPinned ? 1 : 0,
+      JSON.stringify(nextSubtasks),
+      storedRecurrenceOnCompleted,
+      nextSortOrder,
+      nextFocusMinutes,
       now,
       nextCompletedAt,
       id,
@@ -240,7 +346,7 @@ export async function updateTodo(
     )
     .run();
 
-  return {
+  const updatedItem: TodoItem = {
     id,
     title: nextTitle,
     notes: nextNotes,
@@ -249,10 +355,55 @@ export async function updateTodo(
     category: nextCategory,
     dueDate: nextDueDate,
     pinned: nextPinned,
+    subtasks: nextSubtasks,
+    recurrence: storedRecurrenceOnCompleted,
+    sortOrder: nextSortOrder,
+    focusMinutes: nextFocusMinutes,
     createdAt: existing.createdAt,
     updatedAt: now,
     completedAt: nextCompletedAt,
   };
+
+  let spawnedNextItem: TodoItem | null = null;
+  if (shouldSpawnRecurring) {
+    const nextOccurrenceDate = computeNextRecurrenceDate(nextDueDate, nextRecurrence);
+    const resetSubtasks = nextSubtasks.map((st) => ({
+      id: crypto.randomUUID(),
+      title: st.title,
+      done: false,
+    }));
+    spawnedNextItem = await createTodo(db, owner, {
+      title: nextTitle,
+      notes: nextNotes,
+      status: 'todo',
+      priority: nextPriority,
+      category: nextCategory,
+      dueDate: nextOccurrenceDate,
+      pinned: nextPinned,
+      subtasks: resetSubtasks,
+      recurrence: nextRecurrence,
+      focusMinutes: 0,
+    });
+  }
+
+  return { item: updatedItem, nextItem: spawnedNextItem };
+}
+
+export async function reorderTodos(
+  db: D1Database,
+  ownerEmail: string,
+  orderedIds: string[]
+): Promise<void> {
+  const owner = requireOwnerEmail(ownerEmail);
+  const now = new Date().toISOString();
+  const statements = orderedIds.map((id, index) =>
+    db
+      .prepare('UPDATE todos SET sort_order = ?, updated_at = ? WHERE id = ? AND owner_email = ?')
+      .bind(index + 1, now, id, owner)
+  );
+  if (statements.length > 0) {
+    await db.batch(statements);
+  }
 }
 
 export async function deleteTodo(
@@ -297,13 +448,17 @@ export async function importTodos(
     const category = input.category ?? '';
     const dueDate = input.dueDate ?? null;
     const pinned = input.pinned ? 1 : 0;
+    const subtasks = input.subtasks ?? [];
+    const recurrence = input.recurrence ?? 'none';
+    const sortOrder = 0;
+    const focusMinutes = input.focusMinutes ?? 0;
     const completedAt = status === 'done' ? now : null;
 
     statements.push(
       db
         .prepare(
-          `INSERT INTO todos (id, owner_email, title, notes, status, priority, category, due_date, pinned, created_at, updated_at, completed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO todos (id, owner_email, title, notes, status, priority, category, due_date, pinned, subtasks, recurrence, sort_order, focus_minutes, created_at, updated_at, completed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .bind(
           id,
@@ -315,6 +470,10 @@ export async function importTodos(
           category,
           dueDate,
           pinned,
+          JSON.stringify(subtasks),
+          recurrence,
+          sortOrder,
+          focusMinutes,
           now,
           now,
           completedAt
@@ -330,6 +489,10 @@ export async function importTodos(
       category,
       dueDate,
       pinned: pinned === 1,
+      subtasks,
+      recurrence,
+      sortOrder,
+      focusMinutes,
       createdAt: now,
       updatedAt: now,
       completedAt,

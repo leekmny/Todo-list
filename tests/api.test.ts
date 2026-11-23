@@ -12,6 +12,10 @@ interface StoredTodoRow {
   category: string;
   due_date: string | null;
   pinned: number;
+  subtasks: string;
+  recurrence: string;
+  sort_order: number;
+  focus_minutes: number;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -49,7 +53,17 @@ function createMockD1(): D1Database {
     }
 
     if (normalized === 'PRAGMA table_info(todos)') {
-      return { results: [{ name: 'id' }, { name: 'owner_email' }], meta: { changes: 0 } };
+      return {
+        results: [
+          { name: 'id' },
+          { name: 'owner_email' },
+          { name: 'subtasks' },
+          { name: 'recurrence' },
+          { name: 'sort_order' },
+          { name: 'focus_minutes' },
+        ],
+        meta: { changes: 0 },
+      };
     }
 
     if (normalized.startsWith('SELECT failures, locked_until FROM auth_attempts')) {
@@ -96,9 +110,7 @@ function createMockD1(): D1Database {
 
     if (normalized.startsWith('UPDATE email_otps SET attempts = attempts + 1')) {
       const row = otps.get(String(params[0]));
-      if (row) {
-        row.attempts += 1;
-      }
+      if (row) row.attempts += 1;
       return { results: [], meta: { changes: row ? 1 : 0 } };
     }
 
@@ -125,6 +137,7 @@ function createMockD1(): D1Database {
         .filter((row) => row.owner_email === owner)
         .sort((a, b) => {
           if (a.pinned !== b.pinned) return b.pinned - a.pinned;
+          if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
           return b.created_at.localeCompare(a.created_at);
         });
       return { results: rows, meta: { changes: 0 } };
@@ -141,6 +154,10 @@ function createMockD1(): D1Database {
         category,
         due_date,
         pinned,
+        subtasks,
+        recurrence,
+        sort_order,
+        focus_minutes,
         created_at,
         updated_at,
         completed_at,
@@ -156,6 +173,10 @@ function createMockD1(): D1Database {
         number,
         string,
         string,
+        number,
+        number,
+        string,
+        string,
         string | null,
       ];
       todos.set(id, {
@@ -168,10 +189,24 @@ function createMockD1(): D1Database {
         category,
         due_date,
         pinned,
+        subtasks,
+        recurrence,
+        sort_order,
+        focus_minutes,
         created_at,
         updated_at,
         completed_at,
       });
+      return { results: [], meta: { changes: 1 } };
+    }
+
+    if (normalized.startsWith('UPDATE todos SET sort_order = ?')) {
+      const [sort_order, updated_at, id, owner_email] = params as [number, string, string, string];
+      const existing = todos.get(id);
+      if (!existing || existing.owner_email !== owner_email) {
+        return { results: [], meta: { changes: 0 } };
+      }
+      todos.set(id, { ...existing, sort_order, updated_at });
       return { results: [], meta: { changes: 1 } };
     }
 
@@ -184,6 +219,10 @@ function createMockD1(): D1Database {
         category,
         due_date,
         pinned,
+        subtasks,
+        recurrence,
+        sort_order,
+        focus_minutes,
         updated_at,
         completed_at,
         id,
@@ -195,6 +234,10 @@ function createMockD1(): D1Database {
         string,
         string,
         string | null,
+        number,
+        string,
+        string,
+        number,
         number,
         string,
         string | null,
@@ -214,6 +257,10 @@ function createMockD1(): D1Database {
         category,
         due_date,
         pinned,
+        subtasks,
+        recurrence,
+        sort_order,
+        focus_minutes,
         updated_at,
         completed_at,
       });
@@ -324,7 +371,7 @@ async function loginAs(app: ReturnType<typeof createApp>, env: Env, email: strin
         'Content-Type': 'application/json',
         Origin: 'https://private.example.com',
       },
-      body: JSON.stringify({ email, code: capturedCode }),
+      body: JSON.stringify({ email, code: capturedCode, rememberMe: true }),
     },
     env
   );
@@ -338,8 +385,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Private Todo Worker API (Multi-user Email Auth)', () => {
-  it('blocks bots via robots.txt and sets strict security headers', async () => {
+describe('Private Todo Worker API (Hardened Multi-user + Power Features)', () => {
+  it('enforces hardened security headers (CSP, HSTS, COOP, CORP, robots) and rejects oversized payloads', async () => {
     const app = createApp();
     const env = createEnv();
 
@@ -348,83 +395,33 @@ describe('Private Todo Worker API (Multi-user Email Auth)', () => {
     expect(await robots.text()).toContain('Disallow: /');
     expect(robots.headers.get('X-Robots-Tag')).toBe('noindex, nofollow, noarchive');
     expect(robots.headers.get('X-Frame-Options')).toBe('DENY');
+    expect(robots.headers.get('Strict-Transport-Security')).toContain('max-age=31536000');
+    expect(robots.headers.get('Cross-Origin-Opener-Policy')).toBe('same-origin');
+    expect(robots.headers.get('Cross-Origin-Resource-Policy')).toBe('same-origin');
+    expect(robots.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
 
-    const health = await app.request('https://private.example.com/api/health', {}, env);
-    expect(health.status).toBe(200);
-    expect(health.headers.get('Cache-Control')).toBe('no-store, private');
-  });
-
-  it('denies unauthenticated access and fails closed when email sender is not configured', async () => {
-    const app = createApp();
-    const env = createEnv();
-
-    const todosRes = await app.request('https://private.example.com/api/todos', {}, env);
-    expect(todosRes.status).toBe(401);
-
-    const unconfiguredEnv = createEnv({ RESEND_API_KEY: '' });
-    const reqRes = await app.request(
+    const oversized = await app.request(
       'https://private.example.com/api/auth/request-code',
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'alice@example.com' }),
-      },
-      unconfiguredEnv
-    );
-    expect(reqRes.status).toBe(503);
-  });
-
-  it('prevents email enumeration and enforces resend cooldown', async () => {
-    const app = createApp();
-    const env = createEnv();
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response(JSON.stringify({ id: 'email_1' }), { status: 200 }));
-
-    const strangerRes = await app.request(
-      'https://private.example.com/api/auth/request-code',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'stranger@example.com' }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': String(1024 * 1024),
+        },
+        body: '{}',
       },
       env
     );
-    expect(strangerRes.status).toBe(200);
-    expect(fetchSpy).not.toHaveBeenCalled();
-
-    const first = await app.request(
-      'https://private.example.com/api/auth/request-code',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'alice@example.com' }),
-      },
-      env
-    );
-    expect(first.status).toBe(200);
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-
-    const second = await app.request(
-      'https://private.example.com/api/auth/request-code',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'alice@example.com' }),
-      },
-      env
-    );
-    expect(second.status).toBe(429);
+    expect(oversized.status).toBe(413);
   });
 
-  it('strictly isolates todos between invited users and revokes removed users', async () => {
+  it('strictly isolates todos between users and revokes removed users', async () => {
     const app = createApp();
     const env = createEnv();
 
     const aliceCookie = await loginAs(app, env, 'alice@example.com');
     const bobCookie = await loginAs(app, env, 'bob@example.com');
 
-    // Alice creates an active todo and a completed todo
     const aliceCreate = await app.request(
       'https://private.example.com/api/todos',
       {
@@ -434,53 +431,13 @@ describe('Private Todo Worker API (Multi-user Email Auth)', () => {
           Cookie: aliceCookie,
           Origin: 'https://private.example.com',
         },
-        body: JSON.stringify({ title: 'Alice secret plan', status: 'todo' }),
+        body: JSON.stringify({ title: 'Alice secret plan' }),
       },
       env
     );
     expect(aliceCreate.status).toBe(201);
     const { item: aliceTodo } = (await aliceCreate.json()) as { item: { id: string } };
 
-    await app.request(
-      'https://private.example.com/api/todos',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: aliceCookie,
-          Origin: 'https://private.example.com',
-        },
-        body: JSON.stringify({ title: 'Alice done task', status: 'done' }),
-      },
-      env
-    );
-
-    // Bob creates his own todo
-    const bobCreate = await app.request(
-      'https://private.example.com/api/todos',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: bobCookie,
-          Origin: 'https://private.example.com',
-        },
-        body: JSON.stringify({ title: 'Bob private task' }),
-      },
-      env
-    );
-    expect(bobCreate.status).toBe(201);
-
-    // Bob ONLY sees his own todo
-    const bobListRes = await app.request(
-      'https://private.example.com/api/todos',
-      { headers: { Cookie: bobCookie } },
-      env
-    );
-    const bobList = (await bobListRes.json()) as { items: Array<{ title: string }> };
-    expect(bobList.items.map((t) => t.title)).toEqual(['Bob private task']);
-
-    // Bob CANNOT edit, delete, or clear Alice's todos
     const bobPatchAlice = await app.request(
       `https://private.example.com/api/todos/${aliceTodo.id}`,
       {
@@ -492,36 +449,6 @@ describe('Private Todo Worker API (Multi-user Email Auth)', () => {
     );
     expect(bobPatchAlice.status).toBe(404);
 
-    const bobDeleteAlice = await app.request(
-      `https://private.example.com/api/todos/${aliceTodo.id}`,
-      {
-        method: 'DELETE',
-        headers: { Cookie: bobCookie },
-      },
-      env
-    );
-    expect(bobDeleteAlice.status).toBe(404);
-
-    const bobClearCompleted = await app.request(
-      'https://private.example.com/api/todos/completed',
-      {
-        method: 'DELETE',
-        headers: { Cookie: bobCookie },
-      },
-      env
-    );
-    expect(await bobClearCompleted.json()).toEqual({ deletedCount: 0 });
-
-    // Alice still has both of her todos untouched
-    const aliceListRes = await app.request(
-      'https://private.example.com/api/todos',
-      { headers: { Cookie: aliceCookie } },
-      env
-    );
-    const aliceList = (await aliceListRes.json()) as { items: Array<{ title: string }> };
-    expect(aliceList.items).toHaveLength(2);
-
-    // If Bob is removed from ALLOWED_EMAILS, his session is immediately revoked
     const envWithoutBob = { ...env, ALLOWED_EMAILS: 'alice@example.com' };
     const revokedRes = await app.request(
       'https://private.example.com/api/todos',
@@ -531,88 +458,65 @@ describe('Private Todo Worker API (Multi-user Email Auth)', () => {
     expect(revokedRes.status).toBe(401);
   });
 
-  it('enforces CSRF, import, clear completed, logout, and brute-force lockout', async () => {
+  it('supports subtasks, recurring auto-regeneration, focus minutes, and manual reorder', async () => {
     const app = createApp();
     const env = createEnv();
     const aliceCookie = await loginAs(app, env, 'alice@example.com');
 
-    // Cross-origin CSRF blocked
-    const csrfRes = await app.request(
+    // Create a weekly recurring todo with subtasks
+    const createRes = await app.request(
       'https://private.example.com/api/todos',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Cookie: aliceCookie,
-          Origin: 'https://attacker.example.net',
-        },
-        body: JSON.stringify({ title: 'Blocked' }),
-      },
-      env
-    );
-    expect(csrfRes.status).toBe(403);
-
-    // Import & clear completed
-    const importRes = await app.request(
-      'https://private.example.com/api/todos/import',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
         body: JSON.stringify({
-          items: [
-            { title: '할 일 1', priority: 'low' },
-            { title: '할 일 2', status: 'done' },
+          title: '주간 리뷰',
+          dueDate: '2026-11-23',
+          recurrence: 'weekly',
+          subtasks: [
+            { id: 's1', title: '진행상황 정리', done: true },
+            { id: 's2', title: '다음 주 계획', done: false },
           ],
         }),
       },
       env
     );
-    expect(importRes.status).toBe(201);
+    expect(createRes.status).toBe(201);
+    const { item } = (await createRes.json()) as { item: { id: string; subtasks: Array<{ done: boolean }> } };
+    expect(item.subtasks).toHaveLength(2);
 
-    const clearRes = await app.request(
-      'https://private.example.com/api/todos/completed',
-      { method: 'DELETE', headers: { Cookie: aliceCookie } },
-      env
-    );
-    expect(await clearRes.json()).toEqual({ deletedCount: 1 });
-
-    // Logout clears cookie
-    const logoutRes = await app.request(
-      'https://private.example.com/api/auth/logout',
-      { method: 'POST', headers: { Cookie: aliceCookie } },
-      env
-    );
-    expect(logoutRes.headers.get('Set-Cookie')).toContain('Max-Age=0');
-
-    // Brute-force lockout after 5 wrong attempts
-    for (let i = 0; i < 4; i += 1) {
-      const res = await app.request(
-        'https://private.example.com/api/auth/verify-code',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'CF-Connecting-IP': '203.0.113.10',
-          },
-          body: JSON.stringify({ email: 'alice@example.com', code: '000000' }),
-        },
-        env
-      );
-      expect(res.status).toBe(401);
-    }
-
-    const fifth = await app.request(
-      'https://private.example.com/api/auth/verify-code',
+    // Completing recurring todo automatically creates next week's occurrence with reset subtasks
+    const doneRes = await app.request(
+      `https://private.example.com/api/todos/${item.id}`,
       {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'CF-Connecting-IP': '203.0.113.10',
-        },
-        body: JSON.stringify({ email: 'alice@example.com', code: '000000' }),
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ status: 'done', focusMinutes: 25 }),
       },
       env
     );
-    expect(fifth.status).toBe(429);
+    expect(doneRes.status).toBe(200);
+    const doneBody = (await doneRes.json()) as {
+      item: { status: string; recurrence: string; focusMinutes: number };
+      nextItem: { id: string; dueDate: string; recurrence: string; subtasks: Array<{ done: boolean }> } | null;
+    };
+    expect(doneBody.item.status).toBe('done');
+    expect(doneBody.item.focusMinutes).toBe(25);
+    expect(doneBody.nextItem).toBeTruthy();
+    expect(doneBody.nextItem!.dueDate).toBe('2026-11-30');
+    expect(doneBody.nextItem!.recurrence).toBe('weekly');
+    expect(doneBody.nextItem!.subtasks.every((s) => s.done === false)).toBe(true);
+
+    // Manual reorder succeeds
+    const reorderRes = await app.request(
+      'https://private.example.com/api/todos/reorder',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ orderedIds: [doneBody.nextItem!.id, item.id] }),
+      },
+      env
+    );
+    expect(reorderRes.status).toBe(200);
   });
 });

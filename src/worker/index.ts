@@ -12,6 +12,7 @@ import {
   isAllowedEmail,
   isCfAccessEnabled,
   isEmailOtpConfigured,
+  isPublicSignupEnabled,
   isSameOriginMutation,
   isValidEmailFormat,
   isValidOtpFormat,
@@ -31,19 +32,47 @@ import {
   ensureSchema,
   importTodos,
   listTodos,
+  reorderTodos,
   updateTodo,
 } from './db';
 import type { AppVariables, Env } from './types';
-import { validateCreateTodo, validateImportPayload, validateUpdateTodo } from './validation';
+import {
+  validateCreateTodo,
+  validateImportPayload,
+  validateReorderPayload,
+  validateUpdateTodo,
+} from './validation';
 
-function applySecurityHeaders(headers: Headers, isApi: boolean): void {
+const MAX_BODY_BYTES = 512 * 1024; // 512 KB
+
+const WEB_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+function applySecurityHeaders(headers: Headers, isApi: boolean, isHttps: boolean): void {
   headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('X-Frame-Options', 'DENY');
   headers.set('Referrer-Policy', 'no-referrer');
-  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+  headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  if (isHttps) {
+    headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   if (isApi) {
     headers.set('Cache-Control', 'no-store, private');
+  } else if (!headers.has('Content-Security-Policy')) {
+    headers.set('Content-Security-Policy', WEB_CSP);
   }
 }
 
@@ -57,9 +86,13 @@ export function createApp() {
   const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
   app.use('*', async (c, next) => {
+    const contentLength = Number(c.req.header('Content-Length') ?? '0');
+    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+      return c.json({ error: '요청 크기가 허용 한도(512KB)를 초과했습니다.' }, 413);
+    }
     await next();
     const isApi = new URL(c.req.url).pathname.startsWith('/api/');
-    applySecurityHeaders(c.res.headers, isApi);
+    applySecurityHeaders(c.res.headers, isApi, isHttpsRequest(c.req.raw));
   });
 
   app.get('/robots.txt', (c) => {
@@ -94,10 +127,28 @@ export function createApp() {
 
     const token = getCookieValue(c.req.header('Cookie'), SESSION_COOKIE_NAME);
     const allowedEmails = getAllowedEmails(c.env);
+    const allowPublic = isPublicSignupEnabled(c.env);
     const session =
-      allowedEmails.length > 0
-        ? await verifySessionToken(token, c.env.SESSION_SECRET, allowedEmails)
-        : { valid: false, email: null };
+      allowedEmails.length > 0 || allowPublic
+        ? await verifySessionToken(
+            token,
+            c.env.SESSION_SECRET,
+            allowPublic ? undefined : allowedEmails
+          )
+        : { valid: false, email: null, rememberMe: false, shouldRenew: false };
+
+    // Sliding session renewal: automatically extends persistent 90-day login
+    if (session.valid && session.email && session.shouldRenew && c.env.SESSION_SECRET) {
+      const renewedToken = await createSessionToken(
+        session.email,
+        c.env.SESSION_SECRET,
+        session.rememberMe
+      );
+      c.header(
+        'Set-Cookie',
+        buildSessionCookie(renewedToken, isHttpsRequest(c.req.raw), session.rememberMe)
+      );
+    }
 
     const res: AuthStatusResponse = {
       authenticated: session.valid,
@@ -156,7 +207,6 @@ export function createApp() {
 
     const allowed = await isAllowedEmail(email, c.env);
     if (!allowed) {
-      // Anti-enumeration: respond identically without sending an email
       return c.json({
         ok: true,
         message: '허용된 이메일이라면 6자리 인증 코드를 발송했습니다.',
@@ -220,6 +270,7 @@ export function createApp() {
     const raw = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
     const email = typeof raw.email === 'string' ? normalizeEmail(raw.email) : '';
     const code = typeof raw.code === 'string' ? raw.code.trim() : '';
+    const rememberMe = raw.rememberMe !== false;
 
     if (!isValidEmailFormat(email) || !isValidOtpFormat(code)) {
       return c.json({ error: '이메일과 6자리 숫자 인증 코드를 입력해 주세요.' }, 400);
@@ -249,9 +300,9 @@ export function createApp() {
     }
 
     await clearAuthFailures(c.env.DB, ipHash);
-    const token = await createSessionToken(email, c.env.SESSION_SECRET!);
-    c.header('Set-Cookie', buildSessionCookie(token, isHttpsRequest(c.req.raw)));
-    return c.json({ authenticated: true, authMethod: 'email-otp', userEmail: email });
+    const token = await createSessionToken(email, c.env.SESSION_SECRET!, rememberMe);
+    c.header('Set-Cookie', buildSessionCookie(token, isHttpsRequest(c.req.raw), rememberMe));
+    return c.json({ authenticated: true, authMethod: 'email-otp', userEmail: email, rememberMe });
   });
 
   app.post('/api/auth/logout', (c) => {
@@ -284,14 +335,31 @@ export function createApp() {
     }
 
     const allowedEmails = getAllowedEmails(c.env);
-    if (allowedEmails.length === 0) {
+    const allowPublic = isPublicSignupEnabled(c.env);
+    if (allowedEmails.length === 0 && !allowPublic) {
       return c.json({ error: '이메일 인증이 필요합니다.' }, 401);
     }
 
     const token = getCookieValue(c.req.header('Cookie'), SESSION_COOKIE_NAME);
-    const session = await verifySessionToken(token, c.env.SESSION_SECRET, allowedEmails);
+    const session = await verifySessionToken(
+      token,
+      c.env.SESSION_SECRET,
+      allowPublic ? undefined : allowedEmails
+    );
     if (!session.valid || !session.email) {
       return c.json({ error: '이메일 인증이 필요합니다.' }, 401);
+    }
+
+    if (session.shouldRenew && c.env.SESSION_SECRET) {
+      const renewedToken = await createSessionToken(
+        session.email,
+        c.env.SESSION_SECRET,
+        session.rememberMe
+      );
+      c.header(
+        'Set-Cookie',
+        buildSessionCookie(renewedToken, isHttpsRequest(c.req.raw), session.rememberMe)
+      );
     }
 
     c.set('authMethod', 'email-otp');
@@ -323,6 +391,23 @@ export function createApp() {
 
     const item = await createTodo(c.env.DB, c.get('userEmail'), parsed.data);
     return c.json({ item }, 201);
+  });
+
+  app.post('/api/todos/reorder', async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'JSON 요청 형식이 올바르지 않습니다.' }, 400);
+    }
+
+    const parsed = validateReorderPayload(body);
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400);
+    }
+
+    await reorderTodos(c.env.DB, c.get('userEmail'), parsed.data);
+    return c.json({ ok: true });
   });
 
   app.post('/api/todos/import', async (c) => {
@@ -361,12 +446,12 @@ export function createApp() {
       return c.json({ error: parsed.error }, 400);
     }
 
-    const item = await updateTodo(c.env.DB, c.get('userEmail'), id, parsed.data);
-    if (!item) {
+    const result = await updateTodo(c.env.DB, c.get('userEmail'), id, parsed.data);
+    if (!result) {
       return c.json({ error: '할 일을 찾을 수 없습니다.' }, 404);
     }
 
-    return c.json({ item });
+    return c.json(result);
   });
 
   app.delete('/api/todos/:id', async (c) => {
@@ -386,7 +471,7 @@ export function createApp() {
     if (c.env.ASSETS) {
       const assetResponse = await c.env.ASSETS.fetch(c.req.raw);
       const response = new Response(assetResponse.body, assetResponse);
-      applySecurityHeaders(response.headers, false);
+      applySecurityHeaders(response.headers, false, isHttpsRequest(c.req.raw));
       return response;
     }
     return c.text('Not Found', 404);

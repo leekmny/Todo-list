@@ -1,0 +1,18 @@
+{
+  "name": "Private Todo",
+  "short_name": "Private Todo",
+  "description": "계정별 독립 비밀 할 일 워크스페이스",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0c0d10",
+  "theme_color": "#0c0d10",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
