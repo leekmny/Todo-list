@@ -1,0 +1,38 @@
+{
+  "name": "private-todo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal private todo web application powered by Cloudflare Workers and D1",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "generate-secret": "node scripts/generate-secret.mjs",
+    "check:public": "node scripts/check-public-safe.mjs"
+  },
+  "dependencies": {
+    "hono": "^4.13.20",
+    "lucide-react": "^1.78.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.70.1",
+    "@cloudflare/workers-types": "^5.20261119.1",
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.1.0",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.166.0"
+  }
+}

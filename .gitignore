@@ -1,0 +1,35 @@
+# Dependencies & build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local secrets & environment variables (NEVER commit)
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+
+# Personal Cloudflare configuration (contains worker name, D1 database ID, custom routes)
+wrangler.jsonc
+wrangler.json
+wrangler.toml
+.wrangler/
+
+# Local databases & backups
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+*backup*.json
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+*.log
+.vscode/*
+!.vscode/extensions.json
+.idea/

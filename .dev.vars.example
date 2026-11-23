@@ -1,0 +1,23 @@
+# Local development secrets template.
+# Copy this file to `.dev.vars` (gitignored) and replace with your own values.
+# In Cloudflare production, set secrets via `npx wrangler secret put <KEY>`.
+
+# Only this email address is allowed to sign in
+ALLOWED_EMAIL=you@example.com
+
+# Random secret string (32+ chars) used to sign HttpOnly session cookies & OTP hashes
+# Generate with: npm run generate-secret
+SESSION_SECRET=change-me-to-a-long-random-session-secret-string
+
+# Option A (App built-in Email OTP): Resend API key (free tier works with onboarding@resend.dev)
+# RESEND_API_KEY=your-resend-api-key
+# MAIL_FROM=Private Todo <onboarding@resend.dev>
+
+# Local dev only (ignored outside localhost): prints the 6-digit OTP to your terminal
+DEV_OTP_CONSOLE=true
+
+# Option B (Cloudflare Access One-Time PIN Email Auth - zero external mail API required)
+# Enable Cloudflare Access on your Worker in Cloudflare Dashboard, then set:
+# CF_ACCESS_ENABLED=true
+# CF_ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+# CF_ACCESS_AUD=your-application-audience-tag
