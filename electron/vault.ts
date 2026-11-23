@@ -51,6 +51,7 @@ export interface DesktopVaultStatus {
   configured: boolean;
   emailOtpReady: boolean;
   cfAccessEnabled: boolean;
+  oauthProviders: { google: boolean; github: boolean };
   authMethod: 'local-vault' | null;
   userEmail: string | null;
   desktopMode: true;
@@ -283,6 +284,7 @@ export class EncryptedDesktopVault {
       configured: true,
       emailOtpReady: false,
       cfAccessEnabled: false,
+      oauthProviders: { google: false, github: false },
       authMethod: unlocked ? 'local-vault' : null,
       userEmail: unlocked ? '로컬 암호화 보관함' : null,
       desktopMode: true,

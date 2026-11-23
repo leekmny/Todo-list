@@ -35,6 +35,19 @@ import {
   reorderTodos,
   updateTodo,
 } from './db';
+import {
+  buildClearOAuthStateCookie,
+  buildGitHubAuthorizeUrl,
+  buildGoogleAuthorizeUrl,
+  createOAuthStateCookie,
+  exchangeGitHubCodeForVerifiedEmails,
+  exchangeGoogleCodeForVerifiedEmail,
+  generatePkcePair,
+  generateRandomToken,
+  getOAuthProvidersStatus,
+  verifyOAuthStateCookie,
+  type OAuthProvider,
+} from './oauth';
 import type { AppVariables, Env } from './types';
 import {
   validateCreateTodo,
@@ -108,7 +121,9 @@ export function createApp() {
   app.get('/api/auth/status', async (c) => {
     const cfAccessEnabled = isCfAccessEnabled(c.env);
     const emailOtpReady = isEmailOtpConfigured(c.env, c.req.url);
-    const configured = cfAccessEnabled || emailOtpReady;
+    const oauthProviders = getOAuthProvidersStatus(c.env);
+    const hasOAuth = oauthProviders.google || oauthProviders.github;
+    const configured = cfAccessEnabled || emailOtpReady || hasOAuth;
 
     if (cfAccessEnabled) {
       const cfResult = await verifyCloudflareAccessJwt(c.req.raw, c.env);
@@ -118,6 +133,7 @@ export function createApp() {
           configured,
           emailOtpReady,
           cfAccessEnabled,
+          oauthProviders,
           authMethod: 'cf-access',
           userEmail: cfResult.email,
         };
@@ -155,10 +171,133 @@ export function createApp() {
       configured,
       emailOtpReady,
       cfAccessEnabled,
+      oauthProviders,
       authMethod: session.valid ? 'email-otp' : null,
       userEmail: session.valid ? session.email : null,
     };
     return c.json(res);
+  });
+
+  app.get('/api/auth/oauth/:provider', async (c) => {
+    const providerParam = c.req.param('provider');
+    if (providerParam !== 'google' && providerParam !== 'github') {
+      return c.redirect('/?authError=invalid_provider', 302);
+    }
+    const provider: OAuthProvider = providerParam;
+    const status = getOAuthProvidersStatus(c.env);
+    if (!status[provider] || !c.env.SESSION_SECRET?.trim()) {
+      return c.redirect('/?authError=oauth_not_configured', 302);
+    }
+
+    const reqUrl = new URL(c.req.url);
+    const rememberMe = reqUrl.searchParams.get('rememberMe') !== '0';
+    const state = generateRandomToken(32);
+    const { codeVerifier, codeChallenge } = await generatePkcePair();
+    const redirectUri = `${reqUrl.origin}/api/auth/oauth/${provider}/callback`;
+    const isHttps = isHttpsRequest(c.req.raw);
+
+    const stateCookie = await createOAuthStateCookie(
+      provider,
+      state,
+      codeVerifier,
+      rememberMe,
+      c.env.SESSION_SECRET,
+      isHttps
+    );
+
+    const authorizeUrl =
+      provider === 'google'
+        ? buildGoogleAuthorizeUrl(c.env.GOOGLE_CLIENT_ID!.trim(), redirectUri, state, codeChallenge)
+        : buildGitHubAuthorizeUrl(c.env.GITHUB_CLIENT_ID!.trim(), redirectUri, state, codeChallenge);
+
+    c.header('Set-Cookie', stateCookie);
+    return c.redirect(authorizeUrl, 302);
+  });
+
+  app.get('/api/auth/oauth/:provider/callback', async (c) => {
+    const providerParam = c.req.param('provider');
+    const isHttps = isHttpsRequest(c.req.raw);
+    const clearStateCookie = buildClearOAuthStateCookie(isHttps);
+
+    if (providerParam !== 'google' && providerParam !== 'github') {
+      c.header('Set-Cookie', clearStateCookie);
+      return c.redirect('/?authError=invalid_provider', 302);
+    }
+
+    const provider: OAuthProvider = providerParam;
+    const status = getOAuthProvidersStatus(c.env);
+    if (!status[provider] || !c.env.SESSION_SECRET?.trim()) {
+      c.header('Set-Cookie', clearStateCookie);
+      return c.redirect('/?authError=oauth_not_configured', 302);
+    }
+
+    const reqUrl = new URL(c.req.url);
+    const oauthError = reqUrl.searchParams.get('error');
+    if (oauthError) {
+      c.header('Set-Cookie', clearStateCookie);
+      return c.redirect('/?authError=oauth_cancelled', 302);
+    }
+
+    const code = reqUrl.searchParams.get('code');
+    const state = reqUrl.searchParams.get('state');
+    const verifiedState = await verifyOAuthStateCookie(
+      c.req.header('Cookie'),
+      provider,
+      state,
+      c.env.SESSION_SECRET
+    );
+
+    if (!code || !verifiedState) {
+      c.header('Set-Cookie', clearStateCookie);
+      return c.redirect('/?authError=invalid_state', 302);
+    }
+
+    const redirectUri = `${reqUrl.origin}/api/auth/oauth/${provider}/callback`;
+    const result =
+      provider === 'google'
+        ? await exchangeGoogleCodeForVerifiedEmail(
+            code,
+            verifiedState.codeVerifier,
+            redirectUri,
+            c.env
+          )
+        : await exchangeGitHubCodeForVerifiedEmails(
+            code,
+            verifiedState.codeVerifier,
+            redirectUri,
+            c.env
+          );
+
+    if (!result.ok) {
+      c.header('Set-Cookie', clearStateCookie);
+      return c.redirect(`/?authError=${result.code}`, 302);
+    }
+
+    let matchedEmail: string | null = null;
+    for (const candidate of result.emails) {
+      if (await isAllowedEmail(candidate, c.env)) {
+        matchedEmail = candidate;
+        break;
+      }
+    }
+
+    if (!matchedEmail) {
+      c.header('Set-Cookie', clearStateCookie);
+      return c.redirect('/?authError=email_not_allowed', 302);
+    }
+
+    const sessionToken = await createSessionToken(
+      matchedEmail,
+      c.env.SESSION_SECRET,
+      verifiedState.rememberMe
+    );
+    const sessionCookie = buildSessionCookie(sessionToken, isHttps, verifiedState.rememberMe);
+
+    const headers = new Headers();
+    headers.append('Set-Cookie', clearStateCookie);
+    headers.append('Set-Cookie', sessionCookie);
+    headers.set('Location', '/');
+    return new Response(null, { status: 302, headers });
   });
 
   app.post('/api/auth/request-code', async (c) => {
@@ -209,7 +348,7 @@ export function createApp() {
     if (!allowed) {
       return c.json({
         ok: true,
-        message: '허용된 이메일이라면 6자리 인증 코드를 발송했습니다.',
+        message: '인증 코드가 이메일로 발송되었습니다. 받은편지함을 확인해 주세요.',
         cooldownSeconds: 60,
       });
     }
@@ -233,7 +372,7 @@ export function createApp() {
 
     return c.json({
       ok: true,
-      message: '허용된 이메일이라면 6자리 인증 코드를 발송했습니다.',
+      message: '인증 코드가 이메일로 발송되었습니다. 받은편지함을 확인해 주세요.',
       cooldownSeconds: 60,
     });
   });

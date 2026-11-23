@@ -11,9 +11,13 @@ export interface Env {
   CF_ACCESS_ENABLED?: string;
   CF_ACCESS_TEAM_DOMAIN?: string;
   CF_ACCESS_AUD?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
 }
 
 export interface AppVariables {
-  authMethod: 'email-otp' | 'cf-access';
+  authMethod: 'email-otp' | 'cf-access' | 'oauth-google' | 'oauth-github';
   userEmail: string;
 }

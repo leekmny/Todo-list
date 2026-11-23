@@ -67,17 +67,20 @@ const MIME_TYPES: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
+const ALLOWED_OAUTH_HOSTS = new Set([
+  'accounts.google.com',
+  'github.com',
+  'accounts.youtube.com',
+]);
+
 function isAllowedNavigationUrl(rawUrl: string): boolean {
   try {
     const parsed = new URL(rawUrl);
     if (parsed.origin === LOCAL_APP_ORIGIN) return true;
     if (allowedCloudOrigin && parsed.origin === allowedCloudOrigin) return true;
-    if (
-      allowedCloudOrigin &&
-      parsed.hostname.endsWith('.cloudflareaccess.com') &&
-      parsed.protocol === 'https:'
-    ) {
-      return true;
+    if (allowedCloudOrigin && parsed.protocol === 'https:') {
+      if (parsed.hostname.endsWith('.cloudflareaccess.com')) return true;
+      if (ALLOWED_OAUTH_HOSTS.has(parsed.hostname)) return true;
     }
     return false;
   } catch {

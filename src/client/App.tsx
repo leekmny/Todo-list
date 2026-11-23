@@ -145,6 +145,7 @@ export function App() {
         configured: false,
         emailOtpReady: false,
         cfAccessEnabled: false,
+        oauthProviders: { google: false, github: false },
         authMethod: null,
         userEmail: null,
       });
@@ -518,6 +519,7 @@ export function App() {
         localPasscodeEnabled={Boolean(auth?.localPasscodeEnabled)}
         emailOtpReady={Boolean(auth?.emailOtpReady)}
         cfAccessEnabled={Boolean(auth?.cfAccessEnabled)}
+        oauthProviders={auth?.oauthProviders ?? { google: false, github: false }}
         onUnlocked={() => void refreshAuth()}
       />
     );

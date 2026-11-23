@@ -1,36 +1,40 @@
 # Security Policy
 
-Private Todo is designed from the ground up for personal and small-group privacy, both as a self-hosted Cloudflare Workers web app and as an installable desktop application.
+Private Todo is an open-source, privacy-first todo workspace available both as a standalone desktop application and as a self-hostable Cloudflare Workers + D1 web application.
 
 ## Security Architecture
 
-### 1. Desktop App (Electron)
-- **Strict Process Isolation**: `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, `webSecurity: true`, `webviewTag: false`.
-- **No Raw IPC Exposure**: Only a minimal, strictly validated API is exposed via `contextBridge`.
+### 1. Desktop Application (Electron)
+- **Strict Process Isolation**: `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true`, `webSecurity: true`, `allowRunningInsecureContent: false`, `webviewTag: false`.
+- **Minimal Preload Bridge**: Only strictly typed IPC calls are exposed via `contextBridge`; raw `ipcRenderer` and Node APIs are never exposed to the renderer.
 - **Encrypted Local Storage at Rest**:
-  - Todos are encrypted on disk using **AES-256-GCM** (random 12-byte IV and 16-byte authentication tag on every write, written atomically via temp file + rename).
+  - Todos are encrypted on disk using **AES-256-GCM** with a fresh 12-byte random IV and 16-byte authentication tag on every write, written atomically via temp file + rename.
   - Default mode wraps the random 256-bit vault key using the OS keyring (**Windows DPAPI / macOS Keychain / Linux Secret Service** via Electron `safeStorage`).
-  - Optional **App Lock Passcode** mode derives the encryption key directly via **PBKDF2-SHA256 (310,000 iterations, random 16-byte salt)** and never stores the key on disk, with brute-force lockout (5 failures → 5-minute cooldown).
-- **Navigation & Permission Lockdown**:
-  - Local UI is served through a restricted `app://private-todo` protocol with path-traversal protection.
-  - Arbitrary external navigations, popup windows, and hardware permissions (camera, microphone, geolocation, USB) are denied by default.
-  - Optional Cloud Sync URLs strictly require `https://` (except `localhost` for development).
+  - Optional **App Lock Passcode** mode derives the encryption key directly via **PBKDF2-SHA256 (310,000 iterations, random 16-byte salt)** without storing any key on disk, and enforces brute-force lockout (5 failed attempts → 5-minute cooldown).
+- **Navigation & Hardware Permission Lockdown**:
+  - Local assets are served via a restricted `app://private-todo` protocol with path-traversal protection and strict CSP.
+  - Hardware permissions (camera, microphone, geolocation, USB, etc.) and arbitrary popups/navigations are denied by default.
+  - Optional Cloud Sync URLs strictly require `https://` (except `localhost` for development), and only permit trusted OAuth hosts (`accounts.google.com`, `github.com`, `*.cloudflareaccess.com`) during login.
 
 ### 2. Web / Cloudflare Workers Backend
-- **Per-User Data Isolation**: Every todo query and mutation is scoped by authenticated `owner_email`. Removing a user from `ALLOWED_EMAILS` immediately revokes their active session.
-- **Passwordless Email Authentication**:
-  - Supports 6-digit single-use Email OTPs (HMAC-SHA256 hashed in D1, 10-minute TTL, 60-second resend cooldown, max 5 verification attempts) and Cloudflare Access RS256 JWKS verification.
-  - Constant-time comparisons prevent timing attacks; anti-enumeration responses prevent email discovery.
-- **Session & CSRF Protection**:
+- **Per-User Data Isolation**: Every todo query, mutation, reorder, and import is strictly scoped to the authenticated user's `owner_email`.
+- **OAuth 2.0 + PKCE (Google & GitHub)**:
+  - Uses PKCE (`S256` code challenge) and an HMAC-SHA256 signed, short-lived `HttpOnly` `state` cookie to prevent Login CSRF and authorization code interception.
+  - Strictly requires verified email addresses (`email_verified === true` on Google, `verified === true` on GitHub `/user/emails`).
+- **Passwordless Email OTP & Cloudflare Access**:
+  - 6-digit single-use Email OTPs are stored as HMAC-SHA256 hashes in D1 (10-minute TTL, 60-second resend cooldown, max 5 attempts, per-IP brute-force lockout).
+  - Constant-time comparisons and anti-enumeration responses protect against timing and account discovery attacks.
+  - Optional Cloudflare Access support validates `Cf-Access-Jwt-Assertion` RS256 signatures against Cloudflare JWKS.
+- **Flexible Access Control**:
+  - Supports both open multi-user deployments (`ALLOW_PUBLIC_SIGNUP=true`) and restricted allowlist deployments (`ALLOWED_EMAILS`). Removing an email from `ALLOWED_EMAILS` immediately invalidates its active sessions.
+- **Session & HTTP Hardening**:
   - `HttpOnly`, `SameSite=Lax`, `Secure` HMAC-SHA256 signed cookies with 90-day sliding renewal.
-  - Strict `Origin` and `Sec-Fetch-Site` validation on every mutating (`POST`, `PATCH`, `DELETE`) endpoint.
-- **Hardened HTTP Headers & Limits**:
-  - Strict Content-Security-Policy (CSP), HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `X-Robots-Tag: noindex, nofollow, noarchive`, and `Cache-Control: no-store`.
-  - Request payload size limit (512 KB) to prevent abuse.
-- **Zero Telemetry & Public Repo Hygiene**:
-  - No analytics, trackers, or hardcoded personal URLs/emails in public releases.
-  - Automated `npm run check:public` scans tracked files to prevent committing secrets or personal configs.
+  - Explicit `Origin` and `Sec-Fetch-Site` CSRF validation on every `POST`, `PATCH`, and `DELETE` route.
+  - Strict Content-Security-Policy (CSP), HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store` on API routes, and a 512 KB request body limit (`413`).
+- **Zero Telemetry & Public Repository Hygiene**:
+  - No third-party analytics, ads, trackers, or hardcoded personal endpoints.
+  - `npm run check:public` verifies that secrets and personal configuration files are never tracked in Git.
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability, please open a private security advisory on GitHub or report it responsibly without publishing exploit details before a fix is released.
+If you discover a security vulnerability, please open a GitHub Security Advisory on this repository or report it privately before disclosing exploit details publicly.

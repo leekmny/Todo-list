@@ -1,10 +1,13 @@
 {
   "name": "private-todo",
   "version": "2.0.0",
+  "license": "MIT",
+  "author": "leekmny",
+  "repository": "https://github.com/leekmny/Todo-list",
   "private": true,
   "type": "module",
   "main": "dist/electron/electron/main.cjs",
-  "description": "Private encrypted Todo desktop & Cloudflare Workers web app",
+  "description": "Encrypted desktop & Cloudflare Workers todo workspace with Google/GitHub OAuth and Email OTP",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

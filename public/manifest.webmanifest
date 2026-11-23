@@ -1,7 +1,7 @@
 {
   "name": "Private Todo",
   "short_name": "Private Todo",
-  "description": "계정별 독립 비밀 할 일 워크스페이스",
+  "description": "오프라인 암호화 및 클라우드 동기화를 지원하는 개인 할 일 관리 앱",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

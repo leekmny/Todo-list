@@ -53,12 +53,18 @@ export interface UpdateTodoInput {
   focusMinutes?: number;
 }
 
+export interface OAuthProvidersStatus {
+  google: boolean;
+  github: boolean;
+}
+
 export interface AuthStatusResponse {
   authenticated: boolean;
   configured: boolean;
   emailOtpReady: boolean;
   cfAccessEnabled: boolean;
-  authMethod: 'email-otp' | 'cf-access' | 'local-vault' | null;
+  oauthProviders: OAuthProvidersStatus;
+  authMethod: 'email-otp' | 'cf-access' | 'oauth-google' | 'oauth-github' | 'local-vault' | null;
   userEmail: string | null;
   desktopMode?: boolean;
   localPasscodeEnabled?: boolean;

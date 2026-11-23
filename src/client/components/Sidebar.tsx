@@ -34,7 +34,7 @@ interface SidebarProps {
   totalFocusMinutes: number;
   categories: CategoryCount[];
   theme: 'dark' | 'light';
-  authMethod: 'email-otp' | 'cf-access' | 'local-vault' | null;
+  authMethod: 'email-otp' | 'cf-access' | 'oauth-google' | 'oauth-github' | 'local-vault' | null;
   userEmail: string | null;
   desktopMode?: boolean;
   localPasscodeEnabled?: boolean;
@@ -110,7 +110,7 @@ export function Sidebar({
             </div>
             <div>
               <div className="brand-name">Private Todo</div>
-              <div className="brand-badge">계정별 독립 비밀 공간</div>
+              <div className="brand-badge">나만의 할 일 워크스페이스</div>
             </div>
             <button
               type="button"

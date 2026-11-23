@@ -13,6 +13,8 @@ const FORBIDDEN_FILES = [
 
 const SECRET_PATTERNS = [
   { name: 'Resend API key', regex: /\bre_[A-Za-z0-9]{20,}\b/ },
+  { name: 'Google OAuth client secret', regex: /\bGOCSPX-[A-Za-z0-9_-]{20,}\b/ },
+  { name: 'GitHub token', regex: /\bgh[pousr]_[A-Za-z0-9]{25,}\b/ },
   { name: 'Cloudflare API token pattern', regex: /CLOUDFLARE_API_TOKEN\s*=\s*['"]?[A-Za-z0-9_-]{25,}/ },
   { name: 'Private key block', regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
   { name: 'Personal Gmail address', regex: /[A-Za-z0-9._%+-]+@gmail\.com/i },
