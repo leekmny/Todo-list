@@ -43,6 +43,7 @@ export interface CreateTodoInput {
   status?: TodoStatus;
   priority?: TodoPriority;
   category?: string;
+  autoCategorize?: boolean;
   dueDate?: string | null;
   reminderAt?: string | null;
   pinned?: boolean;
@@ -50,6 +51,8 @@ export interface CreateTodoInput {
   recurrence?: TodoRecurrence;
   focusMinutes?: number;
 }
+
+export type CategorySource = 'manual' | 'ai' | 'fallback' | 'none';
 
 export interface UpdateTodoInput {
   title?: string;
@@ -77,6 +80,7 @@ export interface AuthStatusResponse {
   emailOtpReady: boolean;
   cfAccessEnabled: boolean;
   oauthProviders: OAuthProvidersStatus;
+  aiCategorizeReady?: boolean;
   authMethod: 'email-otp' | 'cf-access' | 'oauth-google' | 'oauth-github' | 'local-vault' | null;
   userEmail: string | null;
   desktopMode?: boolean;

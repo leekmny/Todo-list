@@ -133,6 +133,20 @@ function createMockD1(): D1Database {
       return { results: [], meta: { changes: existed ? 1 : 0 } };
     }
 
+    if (normalized.startsWith('SELECT category, COUNT(*) AS cnt FROM todos')) {
+      const owner = String(params[0]);
+      const counts = new Map<string, number>();
+      for (const row of todos.values()) {
+        if (row.owner_email === owner && row.category.trim()) {
+          counts.set(row.category, (counts.get(row.category) ?? 0) + 1);
+        }
+      }
+      const rows = Array.from(counts.entries())
+        .map(([category, cnt]) => ({ category, cnt }))
+        .sort((a, b) => b.cnt - a.cnt || a.category.localeCompare(b.category));
+      return { results: rows.slice(0, 30), meta: { changes: 0 } };
+    }
+
     if (
       normalized.startsWith('SELECT id, owner_email, title, notes') &&
       normalized.includes('WHERE id = ? AND owner_email = ?')
@@ -224,6 +238,19 @@ function createMockD1(): D1Database {
         return { results: [], meta: { changes: 0 } };
       }
       todos.set(id, { ...existing, sort_order, updated_at });
+      return { results: [], meta: { changes: 1 } };
+    }
+
+    if (normalized.startsWith('UPDATE todos SET category = ?, updated_at = ?')) {
+      const [category, updated_at, id, owner, previousCategory, title, notes] = params as string[];
+      const existing = todos.get(id);
+      if (
+        !existing || existing.owner_email !== owner || existing.category !== previousCategory ||
+        existing.title !== title || existing.notes !== notes
+      ) {
+        return { results: [], meta: { changes: 0 } };
+      }
+      todos.set(id, { ...existing, category, updated_at });
       return { results: [], meta: { changes: 1 } };
     }
 
@@ -704,5 +731,175 @@ describe('Private Todo Worker API (Hardened Multi-user + Power Features)', () =>
       env
     );
     expect(delRes.status).toBe(200);
+  });
+
+  it('preserves a manual category assigned while batch classification is running', async () => {
+    const app = createApp();
+    const baseUrl = 'https://private.example.com';
+    const env = createEnv();
+    const cookie = await loginAs(app, env, 'alice@example.com');
+    const headers = { 'Content-Type': 'application/json', Cookie: cookie };
+    const createRes = await app.request(
+      `${baseUrl}/api/todos`,
+      { method: 'POST', headers, body: JSON.stringify({ title: '병원 예약', autoCategorize: false }) },
+      env
+    );
+    const { item } = (await createRes.json()) as { item: { id: string } };
+    const todoUrl = `${baseUrl}/api/todos/${item.id}`;
+    env.AI = {
+      async run() {
+        const editRes = await app.request(
+          todoUrl,
+          { method: 'PATCH', headers, body: JSON.stringify({ category: '가족' }) },
+          env
+        );
+        expect(editRes.status).toBe(200);
+        return { response: { category: '건강' } };
+      },
+    } as unknown as Ai;
+
+    const batchRes = await app.request(
+      `${baseUrl}/api/todos/auto-categorize`,
+      { method: 'POST', headers },
+      env
+    );
+    expect(batchRes.status).toBe(200);
+    expect(await batchRes.json()).toEqual({ updatedCount: 0, items: [] });
+
+    const listRes = await app.request(`${baseUrl}/api/todos`, { headers }, env);
+    const { items } = (await listRes.json()) as { items: Array<{ id: string; category: string }> };
+    expect(items).toMatchObject([{ id: item.id, category: '가족' }]);
+  });
+
+  it('auto-categorizes todos via Cloudflare Workers AI, respects manual categories, and supports suggest/batch organize', async () => {
+    const aiCalls: Array<{ model: string; input: Record<string, unknown> }> = [];
+    const mockAi = {
+      async run(model: string, input: Record<string, unknown>) {
+        aiCalls.push({ model, input });
+        const messages = (input.messages ?? []) as Array<{ role: string; content: string }>;
+        const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+        if (userText.includes('엄마')) {
+          return { response: '{"category": "#가족\\n무시할 문장"}' };
+        }
+        if (userText.includes('강아지')) {
+          return { response: { category: '반려동물' } };
+        }
+        if (userText.includes('사이드')) {
+          return { response: '{"category": "내프로젝트"}' };
+        }
+        return { response: '{"category": "개발"}' };
+      },
+    } as unknown as Ai;
+
+    const app = createApp();
+    const env = createEnv({ AI: mockAi });
+    const aliceCookie = await loginAs(app, env, 'alice@example.com');
+
+    // Status exposes aiCategorizeReady: true when AI binding is present
+    const statusRes = await app.request(
+      'https://private.example.com/api/auth/status',
+      { headers: { Cookie: aliceCookie } },
+      env
+    );
+    expect(statusRes.status).toBe(200);
+    const statusBody = (await statusRes.json()) as { aiCategorizeReady?: boolean };
+    expect(statusBody.aiCategorizeReady).toBe(true);
+
+    // 1. Manual category is respected without calling AI
+    const manualRes = await app.request(
+      'https://private.example.com/api/todos',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ title: '블로그 개편', category: '내프로젝트' }),
+      },
+      env
+    );
+    expect(manualRes.status).toBe(201);
+    const manualBody = (await manualRes.json()) as { item: { category: string }; categorySource: string };
+    expect(manualBody.item.category).toBe('내프로젝트');
+    expect(manualBody.categorySource).toBe('manual');
+    expect(aiCalls).toHaveLength(0);
+
+    // 2. Empty category triggers Workers AI & sanitizes messy response
+    const aiRes = await app.request(
+      'https://private.example.com/api/todos',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ title: '엄마한테 저번에 말한 거 챙겨드리기', autoCategorize: true }),
+      },
+      env
+    );
+    expect(aiRes.status).toBe(201);
+    const aiBody = (await aiRes.json()) as { item: { category: string }; categorySource: string };
+    expect(aiBody.item.category).toBe('가족');
+    expect(aiBody.categorySource).toBe('ai');
+    expect(aiCalls).toHaveLength(1);
+    const messages = aiCalls[0].input.messages as Array<{ role: string; content: string }>;
+    expect(messages.find((message) => message.role === 'system')?.content).not.toContain('내프로젝트');
+    expect(JSON.parse(messages.find((message) => message.role === 'user')!.content))
+      .toMatchObject({ existingCategories: ['내프로젝트'] });
+
+    // 3. Explicit autoCategorize: false keeps todo uncategorized
+    const uncatRes = await app.request(
+      'https://private.example.com/api/todos',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ title: '강아지 심장사상충 약 챙기기', autoCategorize: false }),
+      },
+      env
+    );
+    expect(uncatRes.status).toBe(201);
+    const uncatBody = (await uncatRes.json()) as { item: { category: string }; categorySource: string };
+    expect(uncatBody.item.category).toBe('');
+    expect(uncatBody.categorySource).toBe('none');
+
+    // 4. Suggest category endpoint works for edit modal
+    const suggestRes = await app.request(
+      'https://private.example.com/api/todos/suggest-category',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ title: '사이드 서비스 런칭 준비' }),
+      },
+      env
+    );
+    expect(suggestRes.status).toBe(200);
+    const suggestBody = (await suggestRes.json()) as { category: string; source: string };
+    expect(suggestBody.category).toBe('내프로젝트');
+    expect(suggestBody.source).toBe('ai');
+
+    // 5. Batch auto-categorize updates uncategorized todos
+    const batchRes = await app.request(
+      'https://private.example.com/api/todos/auto-categorize',
+      {
+        method: 'POST',
+        headers: { Cookie: aliceCookie },
+      },
+      env
+    );
+    expect(batchRes.status).toBe(200);
+    const batchBody = (await batchRes.json()) as {
+      updatedCount: number;
+      items: Array<{ title: string; category: string }>;
+    };
+    expect(batchBody.updatedCount).toBe(1);
+    expect(batchBody.items[0].category).toBe('반려동물');
+
+    const callCount = aiCalls.length;
+    const legacyRes = await app.request(
+      'https://private.example.com/api/todos',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ title: '다음 달 병원 예약' }),
+      },
+      env
+    );
+    expect(legacyRes.status).toBe(201);
+    expect(await legacyRes.json()).toMatchObject({ item: { category: '' }, categorySource: 'none' });
+    expect(aiCalls).toHaveLength(callCount);
   });
 });

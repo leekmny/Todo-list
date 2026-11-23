@@ -14,6 +14,7 @@ import {
   Moon,
   PlayCircle,
   ShieldCheck,
+  Sparkles,
   Star,
   Sun,
   Tag,
@@ -40,6 +41,9 @@ interface SidebarProps {
   doneCount: number;
   totalFocusMinutes: number;
   categories: CategoryCount[];
+  uncategorizedCount: number;
+  aiCategorizeReady?: boolean;
+  autoCategorizing?: boolean;
   theme: 'dark' | 'light';
   authMethod: 'email-otp' | 'cf-access' | 'oauth-google' | 'oauth-github' | 'local-vault' | null;
   userEmail: string | null;
@@ -51,6 +55,7 @@ interface SidebarProps {
   onSelectView: (view: SmartView) => void;
   onOpenCalendar: () => void;
   onSelectCategory: (category: string | null) => void;
+  onAutoCategorizeAll: () => void;
   onRequestNotificationPermission: () => void;
   onOpenPomodoro: () => void;
   onOpenShortcuts: () => void;
@@ -82,6 +87,9 @@ export function Sidebar({
   doneCount,
   totalFocusMinutes,
   categories,
+  uncategorizedCount,
+  aiCategorizeReady = false,
+  autoCategorizing = false,
   theme,
   authMethod,
   userEmail,
@@ -93,6 +101,7 @@ export function Sidebar({
   onSelectView,
   onOpenCalendar,
   onSelectCategory,
+  onAutoCategorizeAll,
   onRequestNotificationPermission,
   onOpenPomodoro,
   onOpenShortcuts,
@@ -285,30 +294,55 @@ export function Sidebar({
             )}
           </ul>
 
-          {categories.length > 0 && (
+          {(categories.length > 0 || uncategorizedCount > 0) && (
             <>
-              <div className="nav-section-label">카테고리</div>
-              <ul className="nav-list">
-                {categories.map((cat) => {
-                  const isActive = selectedCategory === cat.name;
-                  return (
-                    <li key={cat.name}>
-                      <button
-                        type="button"
-                        className={`nav-item ${isActive ? 'is-active' : ''}`}
-                        onClick={() => {
-                          onSelectCategory(isActive ? null : cat.name);
-                          onCloseMobile();
-                        }}
-                      >
-                        <Tag size={15} />
-                        <span className="nav-item-label">{cat.name}</span>
-                        <span className="nav-count">{cat.count}</span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <div className="sidebar-section-header">
+                <div className="nav-section-label">카테고리</div>
+                {uncategorizedCount > 0 && (
+                  <button
+                    type="button"
+                    className="sidebar-mini-btn"
+                    onClick={() => {
+                      onAutoCategorizeAll();
+                      onCloseMobile();
+                    }}
+                    disabled={autoCategorizing}
+                    title={aiCategorizeReady
+                      ? '미분류 할 일의 제목, 메모, 기존 카테고리를 Cloudflare Workers AI로 보냅니다'
+                      : '카테고리가 비어 있는 할 일을 자동으로 분류합니다'}
+                  >
+                    <Sparkles size={11} />
+                    <span>
+                      {autoCategorizing
+                        ? '분류 중...'
+                        : `${aiCategorizeReady ? 'AI 정리' : '자동 정리'} (${uncategorizedCount})`}
+                    </span>
+                  </button>
+                )}
+              </div>
+              {categories.length > 0 && (
+                <ul className="nav-list">
+                  {categories.map((cat) => {
+                    const isActive = selectedCategory === cat.name;
+                    return (
+                      <li key={cat.name}>
+                        <button
+                          type="button"
+                          className={`nav-item ${isActive ? 'is-active' : ''}`}
+                          onClick={() => {
+                            onSelectCategory(isActive ? null : cat.name);
+                            onCloseMobile();
+                          }}
+                        >
+                          <Tag size={15} />
+                          <span className="nav-item-label">{cat.name}</span>
+                          <span className="nav-count">{cat.count}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </>
           )}
         </nav>

@@ -22,6 +22,7 @@ import type {
 } from '../shared/types';
 import {
   ApiError,
+  autoCategorizeTodosApi,
   clearCompletedApi,
   createTodoApi,
   deleteAttachmentApi,
@@ -127,6 +128,7 @@ export function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showDesktopSecurity, setShowDesktopSecurity] = useState(false);
+  const [autoCategorizing, setAutoCategorizing] = useState(false);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const [pomoOpen, setPomoOpen] = useState(false);
@@ -346,6 +348,11 @@ export function App() {
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'ko'));
   }, [todos]);
 
+  const uncategorizedCount = useMemo(
+    () => todos.filter((item) => !item.category.trim()).length,
+    [todos]
+  );
+
   const filteredTodos = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
 
@@ -434,15 +441,51 @@ export function App() {
 
   async function handleCreateTodo(input: CreateTodoInput) {
     try {
-      const created = await createTodoApi(input);
+      const { item: created, categorySource } = await createTodoApi(input);
       setTodos((prev) => [created, ...prev]);
-      showToast(created.reminderAt ? '할 일과 알람을 추가했습니다.' : '할 일을 추가했습니다.');
+      const baseMsg = created.reminderAt ? '할 일과 알람을 추가했습니다.' : '할 일을 추가했습니다.';
+      if (categorySource === 'ai' && created.category) {
+        showToast(`${baseMsg} · AI 분류 #${created.category}`);
+      } else if (categorySource === 'fallback' && created.category) {
+        showToast(`${baseMsg} · 자동 분류 #${created.category}`);
+      } else {
+        showToast(baseMsg);
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setAuth((prev) => (prev ? { ...prev, authenticated: false, authMethod: null } : prev));
         return;
       }
       showToast(err instanceof Error ? err.message : '추가하지 못했습니다.');
+    }
+  }
+
+  async function handleAutoCategorizeAll() {
+    if (autoCategorizing || uncategorizedCount === 0) return;
+    setAutoCategorizing(true);
+    try {
+      const { updatedCount, items: updatedItems } = await autoCategorizeTodosApi();
+      if (updatedCount > 0) {
+        const updatedMap = new Map(updatedItems.map((item) => [item.id, item]));
+        setTodos((prev) => prev.map((item) => {
+          const updated = updatedMap.get(item.id);
+          if (!updated || item.category.trim() || item.title !== updated.title || item.notes !== updated.notes) {
+            return item;
+          }
+          return { ...item, category: updated.category };
+        }));
+        showToast(
+          auth?.aiCategorizeReady
+            ? `미분류 할 일 ${updatedCount}개를 AI가 자동으로 분류했습니다.`
+            : `미분류 할 일 ${updatedCount}개를 자동으로 분류했습니다.`
+        );
+      } else {
+        showToast('분류할 미분류 할 일이 없습니다.');
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '자동 분류에 실패했습니다.');
+    } finally {
+      setAutoCategorizing(false);
     }
   }
 
@@ -633,6 +676,7 @@ export function App() {
         status: todo.status,
         priority: todo.priority,
         category: todo.category,
+        autoCategorize: false,
         dueDate: todo.dueDate,
         reminderAt: todo.reminderAt,
         pinned: todo.pinned,
@@ -758,6 +802,9 @@ export function App() {
         doneCount={counts.done}
         totalFocusMinutes={totalFocusMinutes}
         categories={categories}
+        uncategorizedCount={uncategorizedCount}
+        aiCategorizeReady={Boolean(auth.aiCategorizeReady)}
+        autoCategorizing={autoCategorizing}
         theme={theme}
         authMethod={auth.authMethod}
         userEmail={auth.userEmail}
@@ -775,6 +822,7 @@ export function App() {
           setDisplayMode('calendar');
         }}
         onSelectCategory={setSelectedCategory}
+        onAutoCategorizeAll={() => void handleAutoCategorizeAll()}
         onRequestNotificationPermission={() => void handleRequestNotificationPermission()}
         onOpenPomodoro={() => setPomoOpen((prev) => !prev)}
         onOpenShortcuts={() => setShowShortcuts(true)}
@@ -933,6 +981,7 @@ export function App() {
           inputRef={composerRef}
           existingCategories={categories.map((c) => c.name)}
           defaultCategory={selectedCategory}
+          aiCategorizeReady={Boolean(auth.aiCategorizeReady)}
           onCreate={handleCreateTodo}
         />
 
@@ -1030,6 +1079,7 @@ export function App() {
         <TodoEditModal
           todo={editingTodo}
           existingCategories={categories.map((c) => c.name)}
+          aiCategorizeReady={Boolean(auth.aiCategorizeReady)}
           onClose={() => setEditingTodo(null)}
           onSave={handleUpdateTodo}
           onDelete={handleDeleteTodo}
@@ -1098,7 +1148,11 @@ export function App() {
               <h3>빠른 자연어 입력 문법</h3>
               <ul className="shortcuts-list">
                 <li>
-                  <span>카테고리 자동 지정</span>
+                  <span>AI 카테고리 자동 분류</span>
+                  <code>태그 없이 등록 시 자동</code>
+                </li>
+                <li>
+                  <span>카테고리 직접 지정</span>
                   <code>#업무</code>
                 </li>
                 <li>

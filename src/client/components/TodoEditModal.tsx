@@ -1,5 +1,6 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { Bell, Check, Paperclip, Pin, Plus, Timer, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Bell, Check, Paperclip, Pin, Plus, Sparkles, Timer, Trash2, X } from 'lucide-react';
+import { STANDARD_CATEGORY_NAMES } from '../../shared/categories';
 import type {
   SubtaskItem,
   TodoItem,
@@ -8,11 +9,13 @@ import type {
   TodoStatus,
   UpdateTodoInput,
 } from '../../shared/types';
+import { suggestCategoryApi } from '../api';
 import { AttachmentSection } from './AttachmentSection';
 
 interface TodoEditModalProps {
   todo: TodoItem;
   existingCategories: string[];
+  aiCategorizeReady?: boolean;
   onClose: () => void;
   onSave: (id: string, patch: UpdateTodoInput) => Promise<void>;
   onDelete: (todo: TodoItem) => Promise<void>;
@@ -32,6 +35,7 @@ function formatLocalDateTime(date: Date): string {
 export function TodoEditModal({
   todo,
   existingCategories,
+  aiCategorizeReady = false,
   onClose,
   onSave,
   onDelete,
@@ -50,6 +54,30 @@ export function TodoEditModal({
   const [subtasks, setSubtasks] = useState<SubtaskItem[]>(todo.subtasks ?? []);
   const [newSubtask, setNewSubtask] = useState('');
   const [saving, setSaving] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionError, setSuggestionError] = useState('');
+
+  const categorySuggestions = useMemo(() => {
+    const merged = new Set<string>(existingCategories);
+    for (const std of STANDARD_CATEGORY_NAMES) merged.add(std);
+    return Array.from(merged);
+  }, [existingCategories]);
+
+  async function handleSuggestCategory() {
+    if (!title.trim() || suggesting) return;
+    setSuggesting(true);
+    setSuggestionError('');
+    try {
+      const result = await suggestCategoryApi(title.trim(), notes.trim());
+      if (result.category) {
+        setCategory((current) => current === category ? result.category : current);
+      }
+    } catch {
+      setSuggestionError('카테고리를 추천받지 못했습니다. 다시 시도해 주세요.');
+    } finally {
+      setSuggesting(false);
+    }
+  }
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -328,18 +356,33 @@ export function TodoEditModal({
 
             <div className="field field-span-2">
               <label htmlFor="edit-category">카테고리</label>
-              <input
-                id="edit-category"
-                type="text"
-                className="input"
-                list="edit-category-suggestions"
-                placeholder="예: 개인, 업무, 아이디어"
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                maxLength={40}
-              />
+              <div className="category-input-row">
+                <input
+                  id="edit-category"
+                  type="text"
+                  className="input"
+                  list="edit-category-suggestions"
+                  placeholder="예: 개발, 업무, 건강, 운동, 금융, 여행"
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                  maxLength={40}
+                />
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-ai-suggest"
+                  onClick={() => void handleSuggestCategory()}
+                  disabled={!title.trim() || suggesting}
+                  title={aiCategorizeReady
+                    ? '제목, 메모, 기존 카테고리를 Cloudflare Workers AI로 보냅니다'
+                    : '제목과 메모를 분석해 카테고리를 추천합니다'}
+                >
+                  <Sparkles size={13} />
+                  <span>{suggesting ? '분석 중...' : aiCategorizeReady ? 'AI 추천' : '자동 추천'}</span>
+                </button>
+              </div>
+              {suggestionError && <span role="status">{suggestionError}</span>}
               <datalist id="edit-category-suggestions">
-                {existingCategories.map((cat) => (
+                {categorySuggestions.map((cat) => (
                   <option key={cat} value={cat} />
                 ))}
               </datalist>

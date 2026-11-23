@@ -1,5 +1,7 @@
 export interface Env {
   DB: D1Database;
+  AI?: Ai;
+  AI_CATEGORY_MODEL?: string;
   ASSETS?: Fetcher;
   ALLOWED_EMAIL?: string;
   ALLOWED_EMAILS?: string;

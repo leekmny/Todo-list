@@ -358,6 +358,17 @@ function registerIpcHandlers(): void {
     return vault!.importTodos({ items });
   });
 
+  ipcMain.handle('todos:suggest-category', (event, title: unknown, notes?: unknown) => {
+    assertLocalIpcOrigin(event);
+    if (typeof title !== 'string') return { category: '', source: 'none' };
+    return vault!.suggestCategory(title, typeof notes === 'string' ? notes : '');
+  });
+
+  ipcMain.handle('todos:auto-categorize', (event) => {
+    assertLocalIpcOrigin(event);
+    return vault!.autoCategorizeUncategorized();
+  });
+
   ipcMain.handle(
     'attachments:upload',
     (event, todoId: unknown, fileName: unknown, dataBase64: unknown) => {

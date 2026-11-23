@@ -35,6 +35,9 @@ Private Todo is an open-source, privacy-first todo workspace available both as a
   - Allowlisted safe extensions only (blocks executable/scriptable types like `.html`, `.svg`, `.exe`, `.js`, `.ps1`), filename sanitization, 1.5 MB per-file / 5-per-todo / 30 MB per-user quotas.
   - Downloads always enforce `Content-Security-Policy: default-src 'none'; sandbox`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, and `Content-Disposition: attachment` (except raster images explicitly loaded inline).
   - In the desktop app, each attachment file is encrypted individually with AES-256-GCM and re-encrypted when the vault passcode changes.
+- **Scoped AI Auto-Categorization**:
+  - Cloudflare Workers AI (`env.AI`) processes up to 200 characters of the title, 400 characters of notes, and 30 existing category names scoped to the signed-in user (`owner_email`). The worker separates these values from system instructions and sanitizes model output.
+  - The create API classifies only when the caller sends `autoCategorize: true` and leaves the category empty. The composer lets users turn off classification for the current submission. Suggestion and bulk classification are separate actions. Offline desktop vault mode classifies locally.
 - **Zero Telemetry & Public Repository Hygiene**:
   - No third-party analytics, ads, trackers, or hardcoded personal endpoints.
   - `npm run check:public` verifies that secrets and personal configuration files are never tracked in Git.

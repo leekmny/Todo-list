@@ -264,6 +264,50 @@ export async function listTodos(db: D1Database, ownerEmail: string): Promise<Tod
   return (results ?? []).map((row) => mapRow(row, byTodo.get(row.id) ?? []));
 }
 
+export async function listUserCategories(db: D1Database, ownerEmail: string): Promise<string[]> {
+  const owner = requireOwnerEmail(ownerEmail);
+  const { results } = await db
+    .prepare(
+      `SELECT category, COUNT(*) AS cnt
+       FROM todos
+       WHERE owner_email = ? AND category != ''
+       GROUP BY category
+       ORDER BY cnt DESC, category ASC
+       LIMIT 30`
+    )
+    .bind(owner)
+    .all<{ category: string; cnt: number }>();
+
+  return (results ?? []).map((row) => row.category).filter(Boolean);
+}
+
+export async function listUncategorizedTodos(
+  db: D1Database,
+  ownerEmail: string,
+  limit = 30
+): Promise<TodoItem[]> {
+  const all = await listTodos(db, ownerEmail);
+  return all.filter((item) => !item.category.trim()).slice(0, limit);
+}
+
+export async function categorizeUnchangedTodo(
+  db: D1Database,
+  ownerEmail: string,
+  todo: TodoItem,
+  category: string
+): Promise<TodoItem | null> {
+  const owner = requireOwnerEmail(ownerEmail);
+  const { meta } = await db
+    .prepare(
+      `UPDATE todos SET category = ?, updated_at = ?
+       WHERE id = ? AND owner_email = ? AND category = ? AND title = ? AND notes = ?`
+    )
+    .bind(category, new Date().toISOString(), todo.id, owner, todo.category, todo.title, todo.notes)
+    .run();
+
+  return meta.changes ? getTodoById(db, owner, todo.id) : null;
+}
+
 export async function getTodoById(
   db: D1Database,
   ownerEmail: string,

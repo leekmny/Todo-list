@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fallbackClassifyCategory } from '../src/shared/categories';
 import {
   TODO_LIMITS,
+  type CategorySource,
   type CreateTodoInput,
   type TodoAttachment,
   type TodoItem,
@@ -438,6 +440,18 @@ export class EncryptedDesktopVault {
     });
   }
 
+  private getExistingCategories(): string[] {
+    const counts = new Map<string, number>();
+    for (const item of this.todos) {
+      const cat = item.category.trim();
+      if (!cat) continue;
+      counts.set(cat, (counts.get(cat) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
+      .map(([name]) => name);
+  }
+
   createTodo(rawInput: unknown): TodoItem {
     this.assertUnlocked();
     const parsed = validateCreateTodo(rawInput);
@@ -445,13 +459,22 @@ export class EncryptedDesktopVault {
     const input: CreateTodoInput = parsed.data;
     const now = new Date().toISOString();
     const status = input.status ?? 'todo';
+    let category = (input.category ?? '').trim();
+    if (!category && input.autoCategorize !== false) {
+      category = fallbackClassifyCategory(
+        input.title,
+        input.notes ?? '',
+        this.getExistingCategories(),
+        this.todos
+      );
+    }
     const item: TodoItem = {
       id: crypto.randomUUID(),
       title: input.title,
       notes: input.notes ?? '',
       status,
       priority: input.priority ?? 'medium',
-      category: input.category ?? '',
+      category,
       dueDate: input.dueDate ?? null,
       reminderAt: input.reminderAt ?? null,
       pinned: Boolean(input.pinned),
@@ -467,6 +490,44 @@ export class EncryptedDesktopVault {
     this.todos.unshift(item);
     this.persist();
     return item;
+  }
+
+  suggestCategory(title: string, notes = ''): { category: string; source: CategorySource } {
+    this.assertUnlocked();
+    const trimmed = title.trim();
+    if (!trimmed) return { category: '', source: 'none' };
+    const category = fallbackClassifyCategory(
+      trimmed,
+      notes,
+      this.getExistingCategories(),
+      this.todos
+    );
+    return { category, source: category ? 'fallback' : 'none' };
+  }
+
+  autoCategorizeUncategorized(): { updatedCount: number; items: TodoItem[] } {
+    this.assertUnlocked();
+    const updatedItems: TodoItem[] = [];
+    const now = new Date().toISOString();
+    const knownCategories = [...this.getExistingCategories()];
+
+    for (let i = 0; i < this.todos.length; i += 1) {
+      const item = this.todos[i];
+      if (item.category.trim()) continue;
+      const category = fallbackClassifyCategory(item.title, item.notes, knownCategories, this.todos);
+      if (!category) continue;
+      const next: TodoItem = { ...item, category, updatedAt: now };
+      this.todos[i] = next;
+      updatedItems.push(next);
+      if (!knownCategories.includes(category)) {
+        knownCategories.push(category);
+      }
+    }
+
+    if (updatedItems.length > 0) {
+      this.persist();
+    }
+    return { updatedCount: updatedItems.length, items: updatedItems };
   }
 
   updateTodo(id: string, rawPatch: unknown): { item: TodoItem; nextItem: TodoItem | null } {

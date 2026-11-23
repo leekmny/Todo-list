@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CreateTodoInput, TodoAttachment, TodoItem, UpdateTodoInput } from '../src/shared/types';
+import type {
+  CategorySource,
+  CreateTodoInput,
+  TodoAttachment,
+  TodoItem,
+  UpdateTodoInput,
+} from '../src/shared/types';
 import type { DesktopVaultStatus } from './vault';
 
 const isLocalMode = window.location.protocol === 'app:';
@@ -21,6 +27,8 @@ export interface PrivateTodoDesktopBridge {
   deleteTodo: (id: string) => Promise<void>;
   clearCompleted: () => Promise<number>;
   importTodos: (items: CreateTodoInput[]) => Promise<TodoItem[]>;
+  suggestCategory: (title: string, notes?: string) => Promise<{ category: string; source: CategorySource }>;
+  autoCategorizeTodos: () => Promise<{ updatedCount: number; items: TodoItem[] }>;
   uploadAttachment: (todoId: string, fileName: string, dataBase64: string) => Promise<TodoAttachment>;
   readAttachment: (todoId: string, attachmentId: string) => Promise<{ meta: TodoAttachment; dataBase64: string }>;
   deleteAttachment: (todoId: string, attachmentId: string) => Promise<void>;
@@ -43,6 +51,8 @@ const api: PrivateTodoDesktopBridge = {
   deleteTodo: (id) => ipcRenderer.invoke('todos:delete', id),
   clearCompleted: () => ipcRenderer.invoke('todos:clear-completed'),
   importTodos: (items) => ipcRenderer.invoke('todos:import', items),
+  suggestCategory: (title, notes) => ipcRenderer.invoke('todos:suggest-category', title, notes),
+  autoCategorizeTodos: () => ipcRenderer.invoke('todos:auto-categorize'),
   uploadAttachment: (todoId, fileName, dataBase64) =>
     ipcRenderer.invoke('attachments:upload', todoId, fileName, dataBase64),
   readAttachment: (todoId, attachmentId) =>

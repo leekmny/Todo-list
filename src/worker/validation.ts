@@ -147,6 +147,14 @@ export function validateCreateTodo(body: unknown): Validated<CreateTodoInput> {
     }
   }
 
+  let autoCategorize = false;
+  if (raw.autoCategorize !== undefined) {
+    if (typeof raw.autoCategorize !== 'boolean') {
+      return { ok: false, error: '자동 분류 여부는 불리언 값이어야 합니다.' };
+    }
+    autoCategorize = raw.autoCategorize;
+  }
+
   let dueDate: string | null = null;
   if (raw.dueDate !== undefined && raw.dueDate !== null && raw.dueDate !== '') {
     if (typeof raw.dueDate !== 'string' || !isValidCalendarDate(raw.dueDate.trim())) {
@@ -207,6 +215,7 @@ export function validateCreateTodo(body: unknown): Validated<CreateTodoInput> {
       status,
       priority,
       category,
+      autoCategorize,
       dueDate,
       reminderAt,
       pinned,
@@ -393,4 +402,31 @@ export function validateImportPayload(body: unknown): Validated<CreateTodoInput[
   }
 
   return { ok: true, data: validatedItems };
+}
+
+export function validateSuggestCategoryPayload(
+  body: unknown
+): Validated<{ title: string; notes: string }> {
+  if (!body || typeof body !== 'object') {
+    return { ok: false, error: '요청 본문이 올바르지 않습니다.' };
+  }
+  const raw = body as Record<string, unknown>;
+  if (typeof raw.title !== 'string') {
+    return { ok: false, error: '할 일 제목을 입력해 주세요.' };
+  }
+  const title = raw.title.trim();
+  if (!title) {
+    return { ok: false, error: '할 일 제목은 비워둘 수 없습니다.' };
+  }
+  if (title.length > TODO_LIMITS.MAX_TITLE_LENGTH) {
+    return { ok: false, error: `제목은 ${TODO_LIMITS.MAX_TITLE_LENGTH}자 이하로 입력해 주세요.` };
+  }
+  let notes = '';
+  if (raw.notes !== undefined) {
+    if (typeof raw.notes !== 'string') {
+      return { ok: false, error: '메모 형식이 올바르지 않습니다.' };
+    }
+    notes = raw.notes.trim().slice(0, TODO_LIMITS.MAX_NOTES_LENGTH);
+  }
+  return { ok: true, data: { title, notes } };
 }

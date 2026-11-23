@@ -1,5 +1,6 @@
 import { Hono, type MiddlewareHandler } from 'hono';
-import type { AuthStatusResponse } from '../shared/types';
+import type { AuthStatusResponse, CategorySource } from '../shared/types';
+import { classifyTodoCategoryWithAi } from './aiCategory';
 import {
   buildClearSessionCookie,
   buildSessionCookie,
@@ -32,6 +33,7 @@ import {
 } from './attachments';
 import {
   addAttachment,
+  categorizeUnchangedTodo,
   clearCompletedTodos,
   createTodo,
   deleteAttachment,
@@ -40,6 +42,8 @@ import {
   getAttachmentWithData,
   importTodos,
   listTodos,
+  listUncategorizedTodos,
+  listUserCategories,
   reorderTodos,
   updateTodo,
 } from './db';
@@ -61,6 +65,7 @@ import {
   validateCreateTodo,
   validateImportPayload,
   validateReorderPayload,
+  validateSuggestCategoryPayload,
   validateUpdateTodo,
 } from './validation';
 
@@ -153,6 +158,7 @@ export function createApp() {
           emailOtpReady,
           cfAccessEnabled,
           oauthProviders,
+          aiCategorizeReady: Boolean(c.env.AI),
           authMethod: 'cf-access',
           userEmail: cfResult.email,
         };
@@ -191,6 +197,7 @@ export function createApp() {
       emailOtpReady,
       cfAccessEnabled,
       oauthProviders,
+      aiCategorizeReady: Boolean(c.env.AI),
       authMethod: session.valid ? 'email-otp' : null,
       userEmail: session.valid ? session.email : null,
     };
@@ -547,8 +554,87 @@ export function createApp() {
       return c.json({ error: parsed.error }, 400);
     }
 
-    const item = await createTodo(c.env.DB, c.get('userEmail'), parsed.data);
-    return c.json({ item }, 201);
+    const userEmail = c.get('userEmail');
+    let category = parsed.data.category ?? '';
+    let categorySource: CategorySource = category ? 'manual' : 'none';
+
+    if (!category && parsed.data.autoCategorize) {
+      const existingCategories = await listUserCategories(c.env.DB, userEmail);
+      const classified = await classifyTodoCategoryWithAi(c.env, {
+        title: parsed.data.title,
+        notes: parsed.data.notes,
+        existingCategories,
+      });
+      if (classified.category) {
+        category = classified.category;
+        categorySource = classified.source;
+      }
+    }
+
+    const item = await createTodo(c.env.DB, userEmail, {
+      ...parsed.data,
+      category,
+    });
+    return c.json({ item, categorySource }, 201);
+  });
+
+  app.post('/api/todos/suggest-category', async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'JSON 요청 형식이 올바르지 않습니다.' }, 400);
+    }
+
+    const parsed = validateSuggestCategoryPayload(body);
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400);
+    }
+
+    const existingCategories = await listUserCategories(c.env.DB, c.get('userEmail'));
+    const classified = await classifyTodoCategoryWithAi(c.env, {
+      title: parsed.data.title,
+      notes: parsed.data.notes,
+      existingCategories,
+    });
+    return c.json(classified);
+  });
+
+  app.post('/api/todos/auto-categorize', async (c) => {
+    const userEmail = c.get('userEmail');
+    const uncategorized = await listUncategorizedTodos(c.env.DB, userEmail, 30);
+    if (uncategorized.length === 0) {
+      return c.json({ updatedCount: 0, items: [] });
+    }
+
+    const knownCategories = [...(await listUserCategories(c.env.DB, userEmail))];
+    const updatedItems = [];
+    const batchSize = 4;
+
+    for (let i = 0; i < uncategorized.length; i += batchSize) {
+      const batch = uncategorized.slice(i, i + batchSize);
+      const results = await Promise.all(
+        batch.map(async (todo) => {
+          const classified = await classifyTodoCategoryWithAi(c.env, {
+            title: todo.title,
+            notes: todo.notes,
+            existingCategories: knownCategories,
+          });
+          if (!classified.category) return null;
+          return categorizeUnchangedTodo(c.env.DB, userEmail, todo, classified.category);
+        })
+      );
+
+      for (const item of results) {
+        if (!item) continue;
+        updatedItems.push(item);
+        if (item.category && !knownCategories.includes(item.category)) {
+          knownCategories.push(item.category);
+        }
+      }
+    }
+
+    return c.json({ updatedCount: updatedItems.length, items: updatedItems });
   });
 
   app.post('/api/todos/reorder', async (c) => {

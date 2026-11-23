@@ -1,5 +1,6 @@
 import { useMemo, useState, type FormEvent, type RefObject } from 'react';
 import { Bell, Calendar, ChevronDown, ChevronUp, Pin, Plus, Repeat, Sparkles, Tag } from 'lucide-react';
+import { STANDARD_CATEGORY_NAMES } from '../../shared/categories';
 import { parseQuickTodoInput } from '../../shared/quickParse';
 import type { CreateTodoInput, TodoPriority, TodoRecurrence } from '../../shared/types';
 
@@ -7,6 +8,7 @@ interface TodoComposerProps {
   inputRef: RefObject<HTMLInputElement | null>;
   existingCategories: string[];
   defaultCategory?: string | null;
+  aiCategorizeReady?: boolean;
   onCreate: (input: CreateTodoInput) => Promise<void>;
 }
 
@@ -40,6 +42,7 @@ export function TodoComposer({
   inputRef,
   existingCategories,
   defaultCategory,
+  aiCategorizeReady = false,
   onCreate,
 }: TodoComposerProps) {
   const [title, setTitle] = useState('');
@@ -47,6 +50,7 @@ export function TodoComposer({
   const [priority, setPriority] = useState<TodoPriority>('medium');
   const [priorityTouched, setPriorityTouched] = useState(false);
   const [category, setCategory] = useState(defaultCategory ?? '');
+  const [autoCategorize, setAutoCategorize] = useState(true);
   const [dueDate, setDueDate] = useState('');
   const [reminderAt, setReminderAt] = useState('');
   const [recurrence, setRecurrence] = useState<TodoRecurrence>('none');
@@ -54,19 +58,33 @@ export function TodoComposer({
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const parsedPreview = useMemo(() => {
+  const categorySuggestions = useMemo(() => {
+    const merged = new Set<string>(existingCategories);
+    for (const std of STANDARD_CATEGORY_NAMES) merged.add(std);
+    return Array.from(merged);
+  }, [existingCategories]);
+
+  const parsedInput = useMemo(() => {
     if (!title.trim()) return null;
-    const parsed = parseQuickTodoInput(title);
-    const hasTokens = Boolean(
-      parsed.category ||
-        parsed.priority ||
-        parsed.dueDate ||
-        parsed.reminderAt ||
-        parsed.recurrence ||
-        parsed.pinned
-    );
-    return hasTokens ? parsed : null;
+    return parseQuickTodoInput(title);
   }, [title]);
+
+  const hasExplicitCategory = Boolean(
+    category.trim() || parsedInput?.category || defaultCategory?.trim()
+  );
+
+  const parsedPreview = useMemo(() => {
+    if (!parsedInput) return null;
+    const hasTokens = Boolean(
+      parsedInput.category ||
+        parsedInput.priority ||
+        parsedInput.dueDate ||
+        parsedInput.reminderAt ||
+        parsedInput.recurrence ||
+        parsedInput.pinned
+    );
+    return hasTokens ? parsedInput : null;
+  }, [parsedInput]);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -89,6 +107,7 @@ export function TodoComposer({
         notes: notes.trim(),
         priority: finalPriority,
         category: finalCategory,
+        autoCategorize: finalCategory ? false : autoCategorize,
         dueDate: finalDueDate,
         reminderAt: finalReminderAt,
         recurrence: finalRecurrence,
@@ -102,6 +121,7 @@ export function TodoComposer({
       setReminderAt('');
       setRecurrence('none');
       setPinned(false);
+      setAutoCategorize(true);
       if (!defaultCategory) {
         setCategory('');
       }
@@ -139,28 +159,53 @@ export function TodoComposer({
           className="btn btn-primary btn-sm"
           disabled={!title.trim() || submitting}
         >
-          {submitting ? '추가 중...' : '추가'}
+          {submitting
+            ? !hasExplicitCategory && autoCategorize && aiCategorizeReady
+              ? 'AI 분류 중...'
+              : '추가 중...'
+            : '추가'}
         </button>
       </div>
 
-      {parsedPreview && (
+      {(parsedPreview || (title.trim().length > 0 && !hasExplicitCategory)) && (
         <div className="nlp-preview" aria-label="자동 인식된 속성">
           <Sparkles size={12} />
-          <span>자동 인식:</span>
-          {parsedPreview.category && <span className="nlp-chip">#{parsedPreview.category}</span>}
-          {parsedPreview.priority && (
+          {parsedPreview && <span>자동 인식:</span>}
+          {parsedPreview?.category && <span className="nlp-chip">#{parsedPreview.category}</span>}
+          {!hasExplicitCategory && (
+            <button
+              type="button"
+              className={`nlp-chip nlp-chip-toggle ${autoCategorize ? 'nlp-chip-ai' : 'nlp-chip-off'}`}
+              onClick={() => setAutoCategorize((prev) => !prev)}
+              title={
+                autoCategorize
+                  ? '클릭하면 이번 등록에서 자동 카테고리 분류를 끕니다'
+                  : '클릭하면 등록 시 카테고리를 자동으로 분류합니다'
+              }
+            >
+              {autoCategorize
+                ? aiCategorizeReady
+                  ? 'AI 카테고리 자동 분류'
+                  : '카테고리 자동 분류'
+                : '자동 분류 끔 (미분류)'}
+            </button>
+          )}
+          {!hasExplicitCategory && autoCategorize && aiCategorizeReady && (
+            <span>분류에 제목, 메모, 기존 카테고리를 Cloudflare Workers AI로 보냅니다.</span>
+          )}
+          {parsedPreview?.priority && (
             <span className="nlp-chip">
               우선순위 {parsedPreview.priority === 'high' ? '높음' : parsedPreview.priority === 'medium' ? '보통' : '낮음'}
             </span>
           )}
-          {parsedPreview.dueDate && <span className="nlp-chip">마감 {parsedPreview.dueDate}</span>}
-          {parsedPreview.reminderAt && (
+          {parsedPreview?.dueDate && <span className="nlp-chip">마감 {parsedPreview.dueDate}</span>}
+          {parsedPreview?.reminderAt && (
             <span className="nlp-chip">알람 {parsedPreview.reminderAt.replace('T', ' ')}</span>
           )}
-          {parsedPreview.recurrence && (
+          {parsedPreview?.recurrence && (
             <span className="nlp-chip">{RECURRENCE_LABELS[parsedPreview.recurrence]} 반복</span>
           )}
-          {parsedPreview.pinned && <span className="nlp-chip">상단 고정</span>}
+          {parsedPreview?.pinned && <span className="nlp-chip">상단 고정</span>}
         </div>
       )}
 
@@ -264,7 +309,7 @@ export function TodoComposer({
                   maxLength={40}
                 />
                 <datalist id="todo-category-suggestions">
-                  {existingCategories.map((cat) => (
+                  {categorySuggestions.map((cat) => (
                     <option key={cat} value={cat} />
                   ))}
                 </datalist>

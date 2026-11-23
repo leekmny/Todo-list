@@ -822,6 +822,96 @@ select {
   font-weight: 500;
 }
 
+.nlp-chip-toggle {
+  border: 1px solid transparent;
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-family: inherit;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.nlp-chip-ai {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.nlp-chip-ai:hover {
+  border-color: var(--accent);
+}
+
+.nlp-chip-off {
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.nlp-chip-off:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.sidebar-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 14px;
+  margin-bottom: 6px;
+  padding-right: 4px;
+}
+
+.sidebar-section-header .nav-section-label {
+  margin: 0;
+}
+
+.sidebar-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.sidebar-mini-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.sidebar-mini-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.category-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.category-input-row .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.btn-ai-suggest {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: var(--accent-soft);
+}
+
+.btn-ai-suggest:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .composer-details {
   margin-top: 10px;
   padding-top: 10px;

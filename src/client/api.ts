@@ -1,5 +1,6 @@
 import type {
   AuthStatusResponse,
+  CategorySource,
   CreateTodoInput,
   TodoAttachment,
   TodoItem,
@@ -23,6 +24,8 @@ interface DesktopBridge {
   deleteTodo: (id: string) => Promise<void>;
   clearCompleted: () => Promise<number>;
   importTodos: (items: CreateTodoInput[]) => Promise<TodoItem[]>;
+  suggestCategory?: (title: string, notes?: string) => Promise<{ category: string; source: CategorySource }>;
+  autoCategorizeTodos?: () => Promise<{ updatedCount: number; items: TodoItem[] }>;
   uploadAttachment: (todoId: string, fileName: string, dataBase64: string) => Promise<TodoAttachment>;
   readAttachment: (todoId: string, attachmentId: string) => Promise<{ meta: TodoAttachment; dataBase64: string }>;
   deleteAttachment: (todoId: string, attachmentId: string) => Promise<void>;
@@ -182,15 +185,58 @@ export async function fetchTodos(): Promise<TodoItem[]> {
   return res.items;
 }
 
-export async function createTodoApi(input: CreateTodoInput): Promise<TodoItem> {
+export async function createTodoApi(
+  input: CreateTodoInput
+): Promise<{ item: TodoItem; categorySource: CategorySource }> {
   if (isLocalDesktopMode()) {
-    return window.privateTodoDesktop!.createTodo(input);
+    const item = await window.privateTodoDesktop!.createTodo(input);
+    const hadManual = Boolean(input.category?.trim());
+    const categorySource: CategorySource = hadManual
+      ? 'manual'
+      : item.category
+        ? 'fallback'
+        : 'none';
+    return { item, categorySource };
   }
-  const res = await requestJson<{ item: TodoItem }>('/api/todos', {
+  const res = await requestJson<{ item: TodoItem; categorySource?: CategorySource }>('/api/todos', {
     method: 'POST',
     body: JSON.stringify(input),
   });
-  return res.item;
+  return {
+    item: res.item,
+    categorySource: res.categorySource ?? (res.item.category ? 'manual' : 'none'),
+  };
+}
+
+export async function suggestCategoryApi(
+  title: string,
+  notes = ''
+): Promise<{ category: string; source: CategorySource }> {
+  if (isLocalDesktopMode()) {
+    if (window.privateTodoDesktop?.suggestCategory) {
+      return window.privateTodoDesktop.suggestCategory(title, notes);
+    }
+    return { category: '', source: 'none' };
+  }
+  return requestJson<{ category: string; source: CategorySource }>('/api/todos/suggest-category', {
+    method: 'POST',
+    body: JSON.stringify({ title, notes }),
+  });
+}
+
+export async function autoCategorizeTodosApi(): Promise<{
+  updatedCount: number;
+  items: TodoItem[];
+}> {
+  if (isLocalDesktopMode()) {
+    if (window.privateTodoDesktop?.autoCategorizeTodos) {
+      return window.privateTodoDesktop.autoCategorizeTodos();
+    }
+    return { updatedCount: 0, items: [] };
+  }
+  return requestJson<{ updatedCount: number; items: TodoItem[] }>('/api/todos/auto-categorize', {
+    method: 'POST',
+  });
 }
 
 export async function updateTodoApi(
