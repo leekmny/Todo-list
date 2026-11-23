@@ -24,6 +24,7 @@ import {
   ApiError,
   clearCompletedApi,
   createTodoApi,
+  deleteAttachmentApi,
   deleteTodoApi,
   fetchTodos,
   getAuthStatus,
@@ -35,6 +36,7 @@ import {
   switchDesktopToLocalApi,
   triggerNativeNotification,
   updateTodoApi,
+  uploadAttachmentApi,
 } from './api';
 import { AlarmBanner } from './components/AlarmBanner';
 import { CalendarView } from './components/CalendarView';
@@ -498,6 +500,54 @@ export function App() {
     void handleUpdateTodo(todo.id, { subtasks });
   }
 
+  async function handleUploadAttachment(todoId: string, file: File) {
+    try {
+      const attachment = await uploadAttachmentApi(todoId, file);
+      setTodos((prev) =>
+        prev.map((item) =>
+          item.id === todoId
+            ? { ...item, attachments: [attachment, ...(item.attachments ?? [])] }
+            : item
+        )
+      );
+      setEditingTodo((prev) =>
+        prev && prev.id === todoId
+          ? { ...prev, attachments: [attachment, ...(prev.attachments ?? [])] }
+          : prev
+      );
+      showToast(`"${attachment.fileName}" 파일을 첨부했습니다.`);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '파일을 첨부하지 못했습니다.');
+    }
+  }
+
+  async function handleDeleteAttachment(todoId: string, attachmentId: string) {
+    try {
+      await deleteAttachmentApi(todoId, attachmentId);
+      setTodos((prev) =>
+        prev.map((item) =>
+          item.id === todoId
+            ? {
+                ...item,
+                attachments: (item.attachments ?? []).filter((a) => a.id !== attachmentId),
+              }
+            : item
+        )
+      );
+      setEditingTodo((prev) =>
+        prev && prev.id === todoId
+          ? {
+              ...prev,
+              attachments: (prev.attachments ?? []).filter((a) => a.id !== attachmentId),
+            }
+          : prev
+      );
+      showToast('첨부 파일을 삭제했습니다.');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '첨부 파일을 삭제하지 못했습니다.');
+    }
+  }
+
   function handleStartFocus(todo: TodoModel) {
     setFocusTodoId(todo.id);
     setPomoOpen(true);
@@ -941,6 +991,8 @@ export function App() {
                     onCycleStatus={handleCycleStatus}
                     onTogglePin={handleTogglePin}
                     onUpdateSubtasks={handleUpdateSubtasks}
+                    onUploadAttachment={handleUploadAttachment}
+                    onDeleteAttachment={handleDeleteAttachment}
                     onStartFocus={handleStartFocus}
                     onEdit={setEditingTodo}
                     onDelete={(item) => void handleDeleteTodo(item)}
@@ -981,6 +1033,8 @@ export function App() {
           onClose={() => setEditingTodo(null)}
           onSave={handleUpdateTodo}
           onDelete={handleDeleteTodo}
+          onUploadAttachment={handleUploadAttachment}
+          onDeleteAttachment={handleDeleteAttachment}
         />
       )}
 

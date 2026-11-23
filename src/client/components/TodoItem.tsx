@@ -5,6 +5,7 @@ import {
   Check,
   GripVertical,
   ListChecks,
+  Paperclip,
   Pause,
   Pencil,
   Pin,
@@ -22,6 +23,7 @@ import type {
   TodoRecurrence,
   TodoStatus,
 } from '../../shared/types';
+import { AttachmentSection } from './AttachmentSection';
 
 interface TodoItemProps {
   todo: TodoModel;
@@ -38,6 +40,8 @@ interface TodoItemProps {
   onCycleStatus: (todo: TodoModel) => void;
   onTogglePin: (todo: TodoModel) => void;
   onUpdateSubtasks: (todo: TodoModel, subtasks: SubtaskItem[]) => void;
+  onUploadAttachment: (todoId: string, file: File) => Promise<void>;
+  onDeleteAttachment: (todoId: string, attachmentId: string) => Promise<void>;
   onStartFocus: (todo: TodoModel) => void;
   onEdit: (todo: TodoModel) => void;
   onDelete: (todo: TodoModel) => void;
@@ -81,11 +85,14 @@ export function TodoItem({
   onCycleStatus,
   onTogglePin,
   onUpdateSubtasks,
+  onUploadAttachment,
+  onDeleteAttachment,
   onStartFocus,
   onEdit,
   onDelete,
 }: TodoItemProps) {
   const [showSubtasks, setShowSubtasks] = useState(false);
+  const [showAttachments, setShowAttachments] = useState(false);
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
 
   const isDone = todo.status === 'done';
@@ -93,6 +100,7 @@ export function TodoItem({
   const isOverdue = Boolean(todo.dueDate && !isDone && todo.dueDate < todayStr);
   const isDueToday = Boolean(todo.dueDate && !isDone && todo.dueDate === todayStr);
   const subtasks = todo.subtasks ?? [];
+  const attachments = todo.attachments ?? [];
   const completedSubtasks = subtasks.filter((s) => s.done).length;
 
   function handleAddSubtask(event: FormEvent) {
@@ -226,6 +234,18 @@ export function TodoItem({
             </button>
           )}
 
+          {attachments.length > 0 && (
+            <button
+              type="button"
+              className="meta-badge attachment-pill"
+              onClick={() => setShowAttachments((prev) => !prev)}
+              title="첨부 파일 열기/접기"
+            >
+              <Paperclip size={11} />
+              <span>{attachments.length}</span>
+            </button>
+          )}
+
           {todo.focusMinutes > 0 && (
             <span className="meta-badge focus-badge" title="누적 뽀모도로 집중 시간">
               <Timer size={11} />
@@ -275,6 +295,15 @@ export function TodoItem({
             </form>
           </div>
         )}
+
+        {showAttachments && (
+          <AttachmentSection
+            todoId={todo.id}
+            attachments={attachments}
+            onUpload={onUploadAttachment}
+            onDelete={onDeleteAttachment}
+          />
+        )}
       </div>
 
       <div className="todo-actions">
@@ -289,6 +318,15 @@ export function TodoItem({
             {isInProgress ? <Pause size={15} /> : <Play size={15} />}
           </button>
         )}
+        <button
+          type="button"
+          className={`icon-btn ${showAttachments || attachments.length > 0 ? 'is-highlighted' : ''}`}
+          onClick={() => setShowAttachments((prev) => !prev)}
+          title="파일 첨부"
+          aria-label="파일 첨부"
+        >
+          <Paperclip size={15} />
+        </button>
         <button
           type="button"
           className={`icon-btn ${showSubtasks ? 'is-highlighted' : ''}`}

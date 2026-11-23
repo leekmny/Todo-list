@@ -14,5 +14,5 @@
     "esModuleInterop": true,
     "types": ["node"]
   },
-  "include": ["electron/**/*.ts", "src/shared/**/*.ts", "src/worker/validation.ts"]
+  "include": ["electron/**/*.ts", "src/shared/**/*.ts", "src/worker/validation.ts", "src/worker/attachments.ts"]
 }

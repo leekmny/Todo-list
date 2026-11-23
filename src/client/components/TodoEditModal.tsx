@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Bell, Check, Pin, Plus, Timer, Trash2, X } from 'lucide-react';
+import { Bell, Check, Paperclip, Pin, Plus, Timer, Trash2, X } from 'lucide-react';
 import type {
   SubtaskItem,
   TodoItem,
@@ -8,6 +8,7 @@ import type {
   TodoStatus,
   UpdateTodoInput,
 } from '../../shared/types';
+import { AttachmentSection } from './AttachmentSection';
 
 interface TodoEditModalProps {
   todo: TodoItem;
@@ -15,6 +16,8 @@ interface TodoEditModalProps {
   onClose: () => void;
   onSave: (id: string, patch: UpdateTodoInput) => Promise<void>;
   onDelete: (todo: TodoItem) => Promise<void>;
+  onUploadAttachment: (todoId: string, file: File) => Promise<void>;
+  onDeleteAttachment: (todoId: string, attachmentId: string) => Promise<void>;
 }
 
 function formatLocalDateTime(date: Date): string {
@@ -32,6 +35,8 @@ export function TodoEditModal({
   onClose,
   onSave,
   onDelete,
+  onUploadAttachment,
+  onDeleteAttachment,
 }: TodoEditModalProps) {
   const [title, setTitle] = useState(todo.title);
   const [notes, setNotes] = useState(todo.notes);
@@ -193,6 +198,19 @@ export function TodoEditModal({
                 <span>추가</span>
               </button>
             </div>
+          </div>
+
+          <div className="field">
+            <label>
+              <Paperclip size={12} style={{ verticalAlign: '-1px', marginRight: 4 }} />
+              첨부 파일 ({todo.attachments?.length ?? 0}/5)
+            </label>
+            <AttachmentSection
+              todoId={todo.id}
+              attachments={todo.attachments ?? []}
+              onUpload={onUploadAttachment}
+              onDelete={onDeleteAttachment}
+            />
           </div>
 
           <div className="field-grid">

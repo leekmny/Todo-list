@@ -131,4 +131,34 @@ describe('EncryptedDesktopVault (AES-256-GCM + PBKDF2)', () => {
     expect(validateCloudUrl('file:///C:/Windows/System32').ok).toBe(false);
     expect(validateCloudUrl('https://user:pass@my-todo.workers.dev').ok).toBe(false);
   });
+
+  it('encrypts local attachments with AES-256-GCM, re-encrypts on passcode change, and cleans up on delete', () => {
+    const dir = createTempDir();
+    const protector = createMockOsProtector();
+    const vault = new EncryptedDesktopVault(dir, protector);
+
+    const todo = vault.createTodo({ title: '로컬 파일 암호화 테스트' });
+    const secretContent = '매우 민감한 제안서 본문 내용 12345';
+    const att = vault.addAttachment(
+      todo.id,
+      'secret-plan.txt',
+      Buffer.from(secretContent, 'utf8').toString('base64')
+    );
+
+    // Disk file must be encrypted (never plaintext)
+    const encFilePath = path.join(dir, 'attachments', `${att.id}.enc`);
+    expect(fs.existsSync(encFilePath)).toBe(true);
+    expect(fs.readFileSync(encFilePath, 'utf8')).not.toContain('매우 민감한 제안서');
+
+    // Re-encrypt with passcode, lock & unlock -> attachment still readable
+    vault.enablePasscode('strong-pass-123');
+    vault.lock();
+    expect(vault.unlockWithPasscode('strong-pass-123').ok).toBe(true);
+    const readBack = vault.readAttachment(todo.id, att.id);
+    expect(Buffer.from(readBack.dataBase64, 'base64').toString('utf8')).toBe(secretContent);
+
+    // Deleting todo deletes encrypted attachment file from disk
+    vault.deleteTodo(todo.id);
+    expect(fs.existsSync(encFilePath)).toBe(false);
+  });
 });

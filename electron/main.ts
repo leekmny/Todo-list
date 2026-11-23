@@ -18,7 +18,7 @@ const LOCAL_CSP = [
   "default-src 'self' app:",
   "script-src 'self' app:",
   "style-src 'self' 'unsafe-inline' app:",
-  "img-src 'self' data: app:",
+  "img-src 'self' data: blob: app:",
   "font-src 'self' data: app:",
   "connect-src 'self' app:",
   "object-src 'none'",
@@ -356,6 +356,33 @@ function registerIpcHandlers(): void {
   ipcMain.handle('todos:import', (event, items: unknown) => {
     assertLocalIpcOrigin(event);
     return vault!.importTodos({ items });
+  });
+
+  ipcMain.handle(
+    'attachments:upload',
+    (event, todoId: unknown, fileName: unknown, dataBase64: unknown) => {
+      assertLocalIpcOrigin(event);
+      if (typeof todoId !== 'string' || typeof fileName !== 'string' || typeof dataBase64 !== 'string') {
+        throw new Error('첨부 파일 업로드 파라미터가 올바르지 않습니다.');
+      }
+      return vault!.addAttachment(todoId, fileName, dataBase64);
+    }
+  );
+
+  ipcMain.handle('attachments:read', (event, todoId: unknown, attachmentId: unknown) => {
+    assertLocalIpcOrigin(event);
+    if (typeof todoId !== 'string' || typeof attachmentId !== 'string') {
+      throw new Error('첨부 파일 조회 파라미터가 올바르지 않습니다.');
+    }
+    return vault!.readAttachment(todoId, attachmentId);
+  });
+
+  ipcMain.handle('attachments:delete', (event, todoId: unknown, attachmentId: unknown) => {
+    assertLocalIpcOrigin(event);
+    if (typeof todoId !== 'string' || typeof attachmentId !== 'string') {
+      throw new Error('첨부 파일 삭제 파라미터가 올바르지 않습니다.');
+    }
+    vault!.deleteAttachment(todoId, attachmentId);
   });
 }
 

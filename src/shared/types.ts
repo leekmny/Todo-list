@@ -8,6 +8,15 @@ export interface SubtaskItem {
   done: boolean;
 }
 
+export interface TodoAttachment {
+  id: string;
+  todoId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
 export interface TodoItem {
   id: string;
   title: string;
@@ -19,6 +28,7 @@ export interface TodoItem {
   reminderAt: string | null;
   pinned: boolean;
   subtasks: SubtaskItem[];
+  attachments: TodoAttachment[];
   recurrence: TodoRecurrence;
   sortOrder: number;
   focusMinutes: number;
@@ -83,6 +93,9 @@ export const TODO_LIMITS = {
   MAX_SUBTASKS: 30,
   MAX_SUBTASK_TITLE_LENGTH: 140,
   MAX_FOCUS_MINUTES: 100_000,
+  MAX_ATTACHMENT_BYTES: 1_572_864, // 1.5 MB (safely below Cloudflare D1 2 MB row limit)
+  MAX_ATTACHMENTS_PER_TODO: 5,
+  MAX_TOTAL_ATTACHMENT_BYTES_PER_USER: 30 * 1024 * 1024, // 30 MB per user
 } as const;
 
 export const TODO_STATUSES: readonly TodoStatus[] = ['todo', 'in_progress', 'done'];

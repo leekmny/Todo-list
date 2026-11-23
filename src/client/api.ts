@@ -1,6 +1,7 @@
 import type {
   AuthStatusResponse,
   CreateTodoInput,
+  TodoAttachment,
   TodoItem,
   UpdateTodoInput,
 } from '../shared/types';
@@ -22,6 +23,9 @@ interface DesktopBridge {
   deleteTodo: (id: string) => Promise<void>;
   clearCompleted: () => Promise<number>;
   importTodos: (items: CreateTodoInput[]) => Promise<TodoItem[]>;
+  uploadAttachment: (todoId: string, fileName: string, dataBase64: string) => Promise<TodoAttachment>;
+  readAttachment: (todoId: string, attachmentId: string) => Promise<{ meta: TodoAttachment; dataBase64: string }>;
+  deleteAttachment: (todoId: string, attachmentId: string) => Promise<void>;
 }
 
 declare global {
@@ -245,4 +249,105 @@ export async function importTodosApi(items: CreateTodoInput[]): Promise<TodoItem
     body: JSON.stringify({ items }),
   });
   return res.items;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+export async function uploadAttachmentApi(todoId: string, file: File): Promise<TodoAttachment> {
+  if (isLocalDesktopMode()) {
+    const buffer = await file.arrayBuffer();
+    const base64 = arrayBufferToBase64(buffer);
+    return window.privateTodoDesktop!.uploadAttachment(todoId, file.name, base64);
+  }
+
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const response = await fetch(`/api/todos/${encodeURIComponent(todoId)}/attachments`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    body: form,
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      data && typeof data === 'object' && typeof data.error === 'string'
+        ? data.error
+        : `파일 업로드에 실패했습니다. (${response.status})`;
+    throw new ApiError(message, response.status);
+  }
+
+  return (data as { attachment: TodoAttachment }).attachment;
+}
+
+export async function downloadAttachmentApi(
+  todoId: string,
+  attachment: TodoAttachment
+): Promise<void> {
+  if (isLocalDesktopMode()) {
+    const { meta, dataBase64 } = await window.privateTodoDesktop!.readAttachment(
+      todoId,
+      attachment.id
+    );
+    const blob = base64ToBlob(dataBase64, meta.mimeType);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = meta.fileName;
+    link.click();
+    URL.revokeObjectURL(url);
+    return;
+  }
+
+  const url = `/api/todos/${encodeURIComponent(todoId)}/attachments/${encodeURIComponent(attachment.id)}`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = attachment.fileName;
+  link.click();
+}
+
+export async function loadAttachmentImageUrl(
+  todoId: string,
+  attachment: TodoAttachment
+): Promise<{ url: string; revoke: boolean }> {
+  if (isLocalDesktopMode()) {
+    const { meta, dataBase64 } = await window.privateTodoDesktop!.readAttachment(
+      todoId,
+      attachment.id
+    );
+    const blob = base64ToBlob(dataBase64, meta.mimeType);
+    return { url: URL.createObjectURL(blob), revoke: true };
+  }
+  return {
+    url: `/api/todos/${encodeURIComponent(todoId)}/attachments/${encodeURIComponent(attachment.id)}?inline=1`,
+    revoke: false,
+  };
+}
+
+export async function deleteAttachmentApi(todoId: string, attachmentId: string): Promise<void> {
+  if (isLocalDesktopMode()) {
+    await window.privateTodoDesktop!.deleteAttachment(todoId, attachmentId);
+    return;
+  }
+  await requestJson<{ deleted: boolean }>(
+    `/api/todos/${encodeURIComponent(todoId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: 'DELETE' }
+  );
 }

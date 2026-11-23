@@ -31,6 +31,10 @@ Private Todo is an open-source, privacy-first todo workspace available both as a
   - `HttpOnly`, `SameSite=Lax`, `Secure` HMAC-SHA256 signed cookies with 90-day sliding renewal.
   - Explicit `Origin` and `Sec-Fetch-Site` CSRF validation on every `POST`, `PATCH`, and `DELETE` route.
   - Strict Content-Security-Policy (CSP), HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, `Cache-Control: no-store` on API routes, and a 512 KB request body limit (`413`).
+- **Hardened File Attachments**:
+  - Allowlisted safe extensions only (blocks executable/scriptable types like `.html`, `.svg`, `.exe`, `.js`, `.ps1`), filename sanitization, 1.5 MB per-file / 5-per-todo / 30 MB per-user quotas.
+  - Downloads always enforce `Content-Security-Policy: default-src 'none'; sandbox`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, and `Content-Disposition: attachment` (except raster images explicitly loaded inline).
+  - In the desktop app, each attachment file is encrypted individually with AES-256-GCM and re-encrypted when the vault passcode changes.
 - **Zero Telemetry & Public Repository Hygiene**:
   - No third-party analytics, ads, trackers, or hardcoded personal endpoints.
   - `npm run check:public` verifies that secrets and personal configuration files are never tracked in Git.

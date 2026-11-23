@@ -26,10 +26,18 @@ import {
   verifySessionToken,
 } from './auth';
 import {
+  buildContentDisposition,
+  isInlinePreviewableImage,
+  validateAttachmentUpload,
+} from './attachments';
+import {
+  addAttachment,
   clearCompletedTodos,
   createTodo,
+  deleteAttachment,
   deleteTodo,
   ensureSchema,
+  getAttachmentWithData,
   importTodos,
   listTodos,
   reorderTodos,
@@ -56,7 +64,8 @@ import {
   validateUpdateTodo,
 } from './validation';
 
-const MAX_BODY_BYTES = 512 * 1024; // 512 KB
+const MAX_BODY_BYTES = 512 * 1024; // 512 KB for JSON requests
+const MAX_UPLOAD_BODY_BYTES = 2 * 1024 * 1024; // 2 MB multipart envelope for 1.5 MB files
 
 const WEB_CSP = [
   "default-src 'self'",
@@ -99,12 +108,22 @@ export function createApp() {
   const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
   app.use('*', async (c, next) => {
+    const pathname = new URL(c.req.url).pathname;
+    const isAttachmentUpload = /^\/api\/todos\/[^/]+\/attachments$/.test(pathname);
+    const maxBytes = isAttachmentUpload ? MAX_UPLOAD_BODY_BYTES : MAX_BODY_BYTES;
     const contentLength = Number(c.req.header('Content-Length') ?? '0');
-    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-      return c.json({ error: '요청 크기가 허용 한도(512KB)를 초과했습니다.' }, 413);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      return c.json(
+        {
+          error: isAttachmentUpload
+            ? '파일 크기는 개당 최대 1.5MB까지 업로드할 수 있습니다.'
+            : '요청 크기가 허용 한도(512KB)를 초과했습니다.',
+        },
+        413
+      );
     }
     await next();
-    const isApi = new URL(c.req.url).pathname.startsWith('/api/');
+    const isApi = pathname.startsWith('/api/');
     applySecurityHeaders(c.res.headers, isApi, isHttpsRequest(c.req.raw));
   });
 
@@ -591,6 +610,81 @@ export function createApp() {
     }
 
     return c.json(result);
+  });
+
+  app.post('/api/todos/:id/attachments', async (c) => {
+    const todoId = c.req.param('id');
+    let formData: FormData;
+    try {
+      formData = await c.req.formData();
+    } catch {
+      return c.json({ error: '파일 업로드 요청 형식이 올바르지 않습니다.' }, 400);
+    }
+
+    const entry = formData.get('file');
+    if (!entry || typeof entry === 'string') {
+      return c.json({ error: '업로드할 파일을 선택해 주세요.' }, 400);
+    }
+
+    const file = entry as File;
+    const validated = validateAttachmentUpload(file.name, file.size);
+    if (!validated.ok) {
+      return c.json({ error: validated.error }, 400);
+    }
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const doubleCheck = validateAttachmentUpload(file.name, bytes.byteLength);
+    if (!doubleCheck.ok) {
+      return c.json({ error: doubleCheck.error }, 400);
+    }
+
+    const saved = await addAttachment(
+      c.env.DB,
+      c.get('userEmail'),
+      todoId,
+      doubleCheck.fileName,
+      doubleCheck.mimeType,
+      bytes
+    );
+
+    if (!saved.ok) {
+      return c.json({ error: saved.error }, saved.status as 400 | 404 | 413);
+    }
+
+    return c.json({ attachment: saved.attachment }, 201);
+  });
+
+  app.get('/api/todos/:id/attachments/:attachmentId', async (c) => {
+    const todoId = c.req.param('id');
+    const attachmentId = c.req.param('attachmentId');
+    const found = await getAttachmentWithData(c.env.DB, c.get('userEmail'), todoId, attachmentId);
+    if (!found) {
+      return c.json({ error: '첨부 파일을 찾을 수 없습니다.' }, 404);
+    }
+
+    const wantInline =
+      new URL(c.req.url).searchParams.get('inline') === '1' &&
+      isInlinePreviewableImage(found.meta.mimeType);
+
+    const headers = new Headers();
+    headers.set('Content-Type', found.meta.mimeType);
+    headers.set('Content-Length', String(found.data.byteLength));
+    headers.set('Content-Disposition', buildContentDisposition(found.meta.fileName, wantInline));
+    headers.set('Content-Security-Policy', "default-src 'none'; sandbox");
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Cache-Control', 'no-store, private');
+
+    return new Response(found.data, { status: 200, headers });
+  });
+
+  app.delete('/api/todos/:id/attachments/:attachmentId', async (c) => {
+    const todoId = c.req.param('id');
+    const attachmentId = c.req.param('attachmentId');
+    const deleted = await deleteAttachment(c.env.DB, c.get('userEmail'), todoId, attachmentId);
+    if (!deleted) {
+      return c.json({ error: '첨부 파일을 찾을 수 없습니다.' }, 404);
+    }
+    return c.json({ deleted: true, id: attachmentId });
   });
 
   app.delete('/api/todos/:id', async (c) => {

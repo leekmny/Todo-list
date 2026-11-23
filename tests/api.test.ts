@@ -37,10 +37,22 @@ interface StoredOtpRow {
   last_sent_at: number;
 }
 
+interface StoredAttachmentRow {
+  id: string;
+  todo_id: string;
+  owner_email: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  data: Uint8Array;
+  created_at: string;
+}
+
 function createMockD1(): D1Database {
   const todos = new Map<string, StoredTodoRow>();
   const attempts = new Map<string, StoredAttemptRow>();
   const otps = new Map<string, StoredOtpRow>();
+  const attachments = new Map<string, StoredAttachmentRow>();
 
   function execute(sql: string, params: unknown[]) {
     const normalized = sql.replace(/\s+/g, ' ').trim();
@@ -297,6 +309,94 @@ function createMockD1(): D1Database {
       return { results: [], meta: { changes: 1 } };
     }
 
+    if (
+      normalized.startsWith('SELECT id, todo_id, file_name, mime_type, size_bytes, created_at FROM todo_attachments') &&
+      normalized.includes('WHERE todo_id = ? AND owner_email = ?')
+    ) {
+      const [todoId, owner] = params as [string, string];
+      const rows = Array.from(attachments.values()).filter(
+        (a) => a.todo_id === todoId && a.owner_email === owner
+      );
+      return { results: rows, meta: { changes: 0 } };
+    }
+
+    if (
+      normalized.startsWith('SELECT id, todo_id, file_name, mime_type, size_bytes, created_at FROM todo_attachments') &&
+      normalized.includes('WHERE owner_email = ?')
+    ) {
+      const owner = String(params[0]);
+      const rows = Array.from(attachments.values()).filter((a) => a.owner_email === owner);
+      return { results: rows, meta: { changes: 0 } };
+    }
+
+    if (normalized.startsWith('SELECT COALESCE(SUM(size_bytes), 0) AS total_bytes FROM todo_attachments')) {
+      const owner = String(params[0]);
+      const total = Array.from(attachments.values())
+        .filter((a) => a.owner_email === owner)
+        .reduce((sum, a) => sum + a.size_bytes, 0);
+      return { results: [{ total_bytes: total }], meta: { changes: 0 } };
+    }
+
+    if (normalized.startsWith('INSERT INTO todo_attachments')) {
+      const [id, todo_id, owner_email, file_name, mime_type, size_bytes, data, created_at] =
+        params as [string, string, string, string, string, number, Uint8Array, string];
+      attachments.set(id, {
+        id,
+        todo_id,
+        owner_email,
+        file_name,
+        mime_type,
+        size_bytes,
+        data,
+        created_at,
+      });
+      return { results: [], meta: { changes: 1 } };
+    }
+
+    if (normalized.startsWith('SELECT id, todo_id, file_name, mime_type, size_bytes, data, created_at FROM todo_attachments')) {
+      const [id, todoId, owner] = params as [string, string, string];
+      const row = attachments.get(id);
+      return {
+        results: row && row.todo_id === todoId && row.owner_email === owner ? [row] : [],
+        meta: { changes: 0 },
+      };
+    }
+
+    if (normalized.startsWith('DELETE FROM todo_attachments WHERE id = ? AND todo_id = ? AND owner_email = ?')) {
+      const [id, todoId, owner] = params as [string, string, string];
+      const row = attachments.get(id);
+      if (!row || row.todo_id !== todoId || row.owner_email !== owner) {
+        return { results: [], meta: { changes: 0 } };
+      }
+      attachments.delete(id);
+      return { results: [], meta: { changes: 1 } };
+    }
+
+    if (normalized.startsWith('DELETE FROM todo_attachments WHERE todo_id = ? AND owner_email = ?')) {
+      const [todoId, owner] = params as [string, string];
+      let changes = 0;
+      for (const [id, row] of attachments.entries()) {
+        if (row.todo_id === todoId && row.owner_email === owner) {
+          attachments.delete(id);
+          changes += 1;
+        }
+      }
+      return { results: [], meta: { changes } };
+    }
+
+    if (normalized.startsWith('DELETE FROM todo_attachments WHERE owner_email = ? AND todo_id IN')) {
+      const owner = String(params[0]);
+      let changes = 0;
+      for (const [id, row] of attachments.entries()) {
+        const parent = todos.get(row.todo_id);
+        if (row.owner_email === owner && parent && parent.status === 'done') {
+          attachments.delete(id);
+          changes += 1;
+        }
+      }
+      return { results: [], meta: { changes } };
+    }
+
     throw new Error(`Unhandled SQL in mock D1: ${normalized}`);
   }
 
@@ -534,5 +634,75 @@ describe('Private Todo Worker API (Hardened Multi-user + Power Features)', () =>
       env
     );
     expect(reorderRes.status).toBe(200);
+  });
+
+  it('supports secure per-user file attachments and blocks dangerous extensions or cross-user downloads', async () => {
+    const app = createApp();
+    const env = createEnv();
+    const aliceCookie = await loginAs(app, env, 'alice@example.com');
+    const bobCookie = await loginAs(app, env, 'bob@example.com');
+
+    const createRes = await app.request(
+      'https://private.example.com/api/todos',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: aliceCookie },
+        body: JSON.stringify({ title: '파일 첨부 테스트' }),
+      },
+      env
+    );
+    const { item } = (await createRes.json()) as { item: { id: string } };
+
+    // Reject dangerous HTML/SVG/EXE upload
+    const badForm = new FormData();
+    badForm.append('file', new File(['<script>alert(1)</script>'], 'xss.html', { type: 'text/html' }));
+    const badUpload = await app.request(
+      `https://private.example.com/api/todos/${item.id}/attachments`,
+      { method: 'POST', headers: { Cookie: aliceCookie }, body: badForm },
+      env
+    );
+    expect(badUpload.status).toBe(400);
+
+    // Upload valid Markdown file
+    const okForm = new FormData();
+    okForm.append('file', new File(['# 제안서 메모\n내용'], 'proposal.md', { type: 'text/markdown' }));
+    const okUpload = await app.request(
+      `https://private.example.com/api/todos/${item.id}/attachments`,
+      { method: 'POST', headers: { Cookie: aliceCookie }, body: okForm },
+      env
+    );
+    expect(okUpload.status).toBe(201);
+    const { attachment } = (await okUpload.json()) as {
+      attachment: { id: string; fileName: string; sizeBytes: number };
+    };
+    expect(attachment.fileName).toBe('proposal.md');
+    expect(attachment.sizeBytes).toBeGreaterThan(0);
+
+    // Bob cannot download or delete Alice's attachment
+    const bobDownload = await app.request(
+      `https://private.example.com/api/todos/${item.id}/attachments/${attachment.id}`,
+      { headers: { Cookie: bobCookie } },
+      env
+    );
+    expect(bobDownload.status).toBe(404);
+
+    // Alice downloads with strict sandbox CSP + attachment disposition
+    const aliceDownload = await app.request(
+      `https://private.example.com/api/todos/${item.id}/attachments/${attachment.id}`,
+      { headers: { Cookie: aliceCookie } },
+      env
+    );
+    expect(aliceDownload.status).toBe(200);
+    expect(aliceDownload.headers.get('Content-Disposition')).toContain('attachment;');
+    expect(aliceDownload.headers.get('Content-Security-Policy')).toContain('sandbox');
+    expect(await aliceDownload.text()).toContain('# 제안서 메모');
+
+    // Alice deletes attachment
+    const delRes = await app.request(
+      `https://private.example.com/api/todos/${item.id}/attachments/${attachment.id}`,
+      { method: 'DELETE', headers: { Cookie: aliceCookie } },
+      env
+    );
+    expect(delRes.status).toBe(200);
   });
 });

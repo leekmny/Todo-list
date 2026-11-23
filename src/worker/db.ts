@@ -1,11 +1,13 @@
-import type {
-  CreateTodoInput,
-  SubtaskItem,
-  TodoItem,
-  TodoPriority,
-  TodoRecurrence,
-  TodoStatus,
-  UpdateTodoInput,
+import {
+  TODO_LIMITS,
+  type CreateTodoInput,
+  type SubtaskItem,
+  type TodoAttachment,
+  type TodoItem,
+  type TodoPriority,
+  type TodoRecurrence,
+  type TodoStatus,
+  type UpdateTodoInput,
 } from '../shared/types';
 import { normalizeEmail } from './auth';
 
@@ -27,6 +29,19 @@ interface TodoRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+}
+
+interface AttachmentMetaRow {
+  id: string;
+  todo_id: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+interface AttachmentDataRow extends AttachmentMetaRow {
+  data: ArrayBuffer | Uint8Array | number[];
 }
 
 const initializedDatabases = new WeakSet<D1Database>();
@@ -64,6 +79,17 @@ const BASE_SCHEMA_STATEMENTS = [
     expires_at INTEGER NOT NULL,
     last_sent_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS todo_attachments (
+    id TEXT PRIMARY KEY,
+    todo_id TEXT NOT NULL,
+    owner_email TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    data BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE
+  )`,
 ];
 
 const INDEX_STATEMENTS = [
@@ -73,6 +99,7 @@ const INDEX_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_todos_owner_pinned_created ON todos(owner_email, pinned DESC, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_todos_owner_status ON todos(owner_email, status)`,
   `CREATE INDEX IF NOT EXISTS idx_todos_owner_reminder ON todos(owner_email, reminder_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_attachments_owner_todo ON todo_attachments(owner_email, todo_id, created_at DESC)`,
 ];
 
 const OPTIONAL_COLUMNS: ReadonlyArray<{ name: string; alterSql: string }> = [
@@ -148,7 +175,18 @@ function computeNextRecurrenceDate(baseDate: string | null, recurrence: TodoRecu
   return `${y}-${m}-${d}`;
 }
 
-function mapRow(row: TodoRow): TodoItem {
+function mapAttachmentMeta(row: AttachmentMetaRow): TodoAttachment {
+  return {
+    id: row.id,
+    todoId: row.todo_id,
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    sizeBytes: row.size_bytes,
+    createdAt: row.created_at,
+  };
+}
+
+function mapRow(row: TodoRow, attachments: TodoAttachment[] = []): TodoItem {
   return {
     id: row.id,
     title: row.title,
@@ -160,6 +198,7 @@ function mapRow(row: TodoRow): TodoItem {
     reminderAt: row.reminder_at ?? null,
     pinned: row.pinned === 1,
     subtasks: parseSubtasksJson(row.subtasks),
+    attachments,
     recurrence: row.recurrence ?? 'none',
     sortOrder: row.sort_order ?? 0,
     focusMinutes: row.focus_minutes ?? 0,
@@ -194,17 +233,35 @@ export async function ensureSchema(db: D1Database): Promise<void> {
 
 export async function listTodos(db: D1Database, ownerEmail: string): Promise<TodoItem[]> {
   const owner = requireOwnerEmail(ownerEmail);
-  const { results } = await db
-    .prepare(
-      `SELECT ${SELECT_COLUMNS}
-       FROM todos
-       WHERE owner_email = ?
-       ORDER BY pinned DESC, sort_order ASC, created_at DESC`
-    )
-    .bind(owner)
-    .all<TodoRow>();
+  const [{ results }, attachmentsRes] = await Promise.all([
+    db
+      .prepare(
+        `SELECT ${SELECT_COLUMNS}
+         FROM todos
+         WHERE owner_email = ?
+         ORDER BY pinned DESC, sort_order ASC, created_at DESC`
+      )
+      .bind(owner)
+      .all<TodoRow>(),
+    db
+      .prepare(
+        `SELECT id, todo_id, file_name, mime_type, size_bytes, created_at
+         FROM todo_attachments
+         WHERE owner_email = ?
+         ORDER BY created_at DESC`
+      )
+      .bind(owner)
+      .all<AttachmentMetaRow>(),
+  ]);
 
-  return (results ?? []).map(mapRow);
+  const byTodo = new Map<string, TodoAttachment[]>();
+  for (const row of attachmentsRes.results ?? []) {
+    const list = byTodo.get(row.todo_id) ?? [];
+    list.push(mapAttachmentMeta(row));
+    byTodo.set(row.todo_id, list);
+  }
+
+  return (results ?? []).map((row) => mapRow(row, byTodo.get(row.id) ?? []));
 }
 
 export async function getTodoById(
@@ -222,7 +279,19 @@ export async function getTodoById(
     .bind(id, owner)
     .first<TodoRow>();
 
-  return row ? mapRow(row) : null;
+  if (!row) return null;
+
+  const { results: attRows } = await db
+    .prepare(
+      `SELECT id, todo_id, file_name, mime_type, size_bytes, created_at
+       FROM todo_attachments
+       WHERE todo_id = ? AND owner_email = ?
+       ORDER BY created_at DESC`
+    )
+    .bind(id, owner)
+    .all<AttachmentMetaRow>();
+
+  return mapRow(row, (attRows ?? []).map(mapAttachmentMeta));
 }
 
 export async function createTodo(
@@ -283,6 +352,7 @@ export async function createTodo(
     reminderAt,
     pinned: pinned === 1,
     subtasks,
+    attachments: [],
     recurrence,
     sortOrder,
     focusMinutes,
@@ -367,6 +437,7 @@ export async function updateTodo(
     reminderAt: nextReminderAt,
     pinned: nextPinned,
     subtasks: nextSubtasks,
+    attachments: existing.attachments,
     recurrence: storedRecurrenceOnCompleted,
     sortOrder: nextSortOrder,
     focusMinutes: nextFocusMinutes,
@@ -426,6 +497,10 @@ export async function deleteTodo(
   id: string
 ): Promise<boolean> {
   const owner = requireOwnerEmail(ownerEmail);
+  await db
+    .prepare('DELETE FROM todo_attachments WHERE todo_id = ? AND owner_email = ?')
+    .bind(id, owner)
+    .run();
   const result = await db
     .prepare('DELETE FROM todos WHERE id = ? AND owner_email = ?')
     .bind(id, owner)
@@ -435,11 +510,123 @@ export async function deleteTodo(
 
 export async function clearCompletedTodos(db: D1Database, ownerEmail: string): Promise<number> {
   const owner = requireOwnerEmail(ownerEmail);
+  await db
+    .prepare(
+      "DELETE FROM todo_attachments WHERE owner_email = ? AND todo_id IN (SELECT id FROM todos WHERE owner_email = ? AND status = 'done')"
+    )
+    .bind(owner, owner)
+    .run();
   const result = await db
     .prepare("DELETE FROM todos WHERE owner_email = ? AND status = 'done'")
     .bind(owner)
     .run();
   return result.meta?.changes ?? 0;
+}
+
+export async function addAttachment(
+  db: D1Database,
+  ownerEmail: string,
+  todoId: string,
+  fileName: string,
+  mimeType: string,
+  data: Uint8Array
+): Promise<{ ok: true; attachment: TodoAttachment } | { ok: false; status: number; error: string }> {
+  const owner = requireOwnerEmail(ownerEmail);
+
+  const todo = await getTodoById(db, owner, todoId);
+  if (!todo) {
+    return { ok: false, status: 404, error: '할 일을 찾을 수 없습니다.' };
+  }
+
+  if (todo.attachments.length >= TODO_LIMITS.MAX_ATTACHMENTS_PER_TODO) {
+    return {
+      ok: false,
+      status: 400,
+      error: `할 일 하나당 최대 ${TODO_LIMITS.MAX_ATTACHMENTS_PER_TODO}개까지 첨부할 수 있습니다.`,
+    };
+  }
+
+  const usageRow = await db
+    .prepare('SELECT COALESCE(SUM(size_bytes), 0) AS total_bytes FROM todo_attachments WHERE owner_email = ?')
+    .bind(owner)
+    .first<{ total_bytes: number }>();
+
+  const currentBytes = Number(usageRow?.total_bytes ?? 0);
+  if (currentBytes + data.byteLength > TODO_LIMITS.MAX_TOTAL_ATTACHMENT_BYTES_PER_USER) {
+    return {
+      ok: false,
+      status: 413,
+      error: '계정당 첨부 파일 저장 용량(30MB)을 초과했습니다.',
+    };
+  }
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+
+  await db
+    .prepare(
+      `INSERT INTO todo_attachments (id, todo_id, owner_email, file_name, mime_type, size_bytes, data, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(id, todoId, owner, fileName, mimeType, data.byteLength, data, now)
+    .run();
+
+  return {
+    ok: true,
+    attachment: {
+      id,
+      todoId,
+      fileName,
+      mimeType,
+      sizeBytes: data.byteLength,
+      createdAt: now,
+    },
+  };
+}
+
+export async function getAttachmentWithData(
+  db: D1Database,
+  ownerEmail: string,
+  todoId: string,
+  attachmentId: string
+): Promise<{ meta: TodoAttachment; data: Uint8Array } | null> {
+  const owner = requireOwnerEmail(ownerEmail);
+  const row = await db
+    .prepare(
+      `SELECT id, todo_id, file_name, mime_type, size_bytes, data, created_at
+       FROM todo_attachments
+       WHERE id = ? AND todo_id = ? AND owner_email = ?`
+    )
+    .bind(attachmentId, todoId, owner)
+    .first<AttachmentDataRow>();
+
+  if (!row) return null;
+
+  const bytes =
+    row.data instanceof Uint8Array
+      ? row.data
+      : row.data instanceof ArrayBuffer
+        ? new Uint8Array(row.data)
+        : new Uint8Array(row.data);
+
+  return {
+    meta: mapAttachmentMeta(row),
+    data: bytes,
+  };
+}
+
+export async function deleteAttachment(
+  db: D1Database,
+  ownerEmail: string,
+  todoId: string,
+  attachmentId: string
+): Promise<boolean> {
+  const owner = requireOwnerEmail(ownerEmail);
+  const result = await db
+    .prepare('DELETE FROM todo_attachments WHERE id = ? AND todo_id = ? AND owner_email = ?')
+    .bind(attachmentId, todoId, owner)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 export async function importTodos(
@@ -507,6 +694,7 @@ export async function importTodos(
       reminderAt,
       pinned: pinned === 1,
       subtasks,
+      attachments: [],
       recurrence,
       sortOrder,
       focusMinutes,

@@ -1,12 +1,15 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type {
-  CreateTodoInput,
-  TodoItem,
-  TodoRecurrence,
-  UpdateTodoInput,
+import {
+  TODO_LIMITS,
+  type CreateTodoInput,
+  type TodoAttachment,
+  type TodoItem,
+  type TodoRecurrence,
+  type UpdateTodoInput,
 } from '../src/shared/types';
+import { validateAttachmentUpload } from '../src/worker/attachments';
 import {
   validateCreateTodo,
   validateImportPayload,
@@ -159,6 +162,7 @@ function atomicWriteJson(filePath: string, payload: unknown): void {
 export class EncryptedDesktopVault {
   private readonly vaultPath: string;
   private readonly settingsPath: string;
+  private readonly attachmentsDir: string;
   private readonly keyProtector: KeyProtector;
 
   private activeKey: Buffer | null = null;
@@ -172,8 +176,44 @@ export class EncryptedDesktopVault {
     fs.mkdirSync(dataDir, { recursive: true });
     this.vaultPath = path.join(dataDir, 'vault.enc');
     this.settingsPath = path.join(dataDir, 'settings.json');
+    this.attachmentsDir = path.join(dataDir, 'attachments');
+    fs.mkdirSync(this.attachmentsDir, { recursive: true });
     this.keyProtector = keyProtector;
     this.bootstrap();
+  }
+
+  private normalizeLoadedTodos(rawTodos: TodoItem[]): TodoItem[] {
+    return rawTodos.map((item) => ({
+      ...item,
+      reminderAt: item.reminderAt ?? null,
+      subtasks: Array.isArray(item.subtasks) ? item.subtasks : [],
+      attachments: Array.isArray(item.attachments) ? item.attachments : [],
+    }));
+  }
+
+  private reencryptAllAttachments(oldKey: Buffer, newKey: Buffer): void {
+    for (const todo of this.todos) {
+      for (const att of todo.attachments ?? []) {
+        const filePath = path.join(this.attachmentsDir, `${att.id}.enc`);
+        if (!fs.existsSync(filePath)) continue;
+        const enc = JSON.parse(fs.readFileSync(filePath, 'utf8')) as {
+          ivHex: string;
+          tagHex: string;
+          ciphertextB64: string;
+        };
+        const plainB64 = decryptAesGcm(oldKey, enc.ivHex, enc.tagHex, enc.ciphertextB64);
+        const reEncrypted = encryptAesGcm(newKey, plainB64);
+        atomicWriteJson(filePath, reEncrypted);
+      }
+    }
+  }
+
+  private removeAttachmentFile(attachmentId: string): void {
+    const safeId = path.basename(attachmentId);
+    const filePath = path.join(this.attachmentsDir, `${safeId}.enc`);
+    if (fs.existsSync(filePath)) {
+      fs.rmSync(filePath, { force: true });
+    }
   }
 
   private bootstrap(): void {
@@ -197,7 +237,7 @@ export class EncryptedDesktopVault {
       const plaintext = decryptAesGcm(key, raw.ivHex, raw.tagHex, raw.ciphertextB64);
       const parsed = JSON.parse(plaintext) as VaultData;
       this.activeKey = key;
-      this.todos = Array.isArray(parsed.todos) ? parsed.todos : [];
+      this.todos = Array.isArray(parsed.todos) ? this.normalizeLoadedTodos(parsed.todos) : [];
     }
   }
 
@@ -321,7 +361,7 @@ export class EncryptedDesktopVault {
       const parsed = JSON.parse(plaintext) as VaultData;
       this.activeKey = key;
       this.activeSalt = salt;
-      this.todos = Array.isArray(parsed.todos) ? parsed.todos : [];
+      this.todos = Array.isArray(parsed.todos) ? this.normalizeLoadedTodos(parsed.todos) : [];
       this.failedAttempts = 0;
       this.lockedUntilMs = 0;
       return { ok: true };
@@ -357,8 +397,10 @@ export class EncryptedDesktopVault {
     if (!newPasscode || newPasscode.length < 6) {
       throw new Error('앱 잠금 비밀번호는 최소 6자 이상이어야 합니다.');
     }
+    const oldKey = this.activeKey!;
     const salt = crypto.randomBytes(SALT_LENGTH);
     const key = derivePasscodeKey(newPasscode, salt, PBKDF2_ITERATIONS);
+    this.reencryptAllAttachments(oldKey, key);
     this.mode = 'passcode';
     this.activeSalt = salt;
     this.activeKey = key;
@@ -378,9 +420,12 @@ export class EncryptedDesktopVault {
       throw new Error('현재 비밀번호가 일치하지 않습니다.');
     }
 
+    const oldKey = this.activeKey!;
+    const nextKey = crypto.randomBytes(KEY_LENGTH);
+    this.reencryptAllAttachments(oldKey, nextKey);
     this.mode = 'os-key';
     this.activeSalt = null;
-    this.activeKey = crypto.randomBytes(KEY_LENGTH);
+    this.activeKey = nextKey;
     this.persist();
   }
 
@@ -411,6 +456,7 @@ export class EncryptedDesktopVault {
       reminderAt: input.reminderAt ?? null,
       pinned: Boolean(input.pinned),
       subtasks: input.subtasks ?? [],
+      attachments: [],
       recurrence: input.recurrence ?? 'none',
       sortOrder: 0,
       focusMinutes: input.focusMinutes ?? 0,
@@ -486,6 +532,7 @@ export class EncryptedDesktopVault {
           title: s.title,
           done: false,
         })),
+        attachments: [],
         recurrence: nextRecurrence,
         sortOrder: 0,
         focusMinutes: 0,
@@ -514,20 +561,107 @@ export class EncryptedDesktopVault {
 
   deleteTodo(id: string): boolean {
     this.assertUnlocked();
-    const before = this.todos.length;
+    const target = this.todos.find((item) => item.id === id);
+    if (!target) return false;
+    for (const att of target.attachments ?? []) {
+      this.removeAttachmentFile(att.id);
+    }
     this.todos = this.todos.filter((item) => item.id !== id);
-    if (this.todos.length === before) return false;
     this.persist();
     return true;
   }
 
   clearCompleted(): number {
     this.assertUnlocked();
-    const before = this.todos.length;
+    const toRemove = this.todos.filter((item) => item.status === 'done');
+    for (const todo of toRemove) {
+      for (const att of todo.attachments ?? []) {
+        this.removeAttachmentFile(att.id);
+      }
+    }
     this.todos = this.todos.filter((item) => item.status !== 'done');
-    const deleted = before - this.todos.length;
-    if (deleted > 0) this.persist();
-    return deleted;
+    if (toRemove.length > 0) this.persist();
+    return toRemove.length;
+  }
+
+  addAttachment(todoId: string, rawFileName: string, dataBase64: string): TodoAttachment {
+    this.assertUnlocked();
+    const index = this.todos.findIndex((t) => t.id === todoId);
+    if (index === -1) throw new Error('할 일을 찾을 수 없습니다.');
+
+    const todo = this.todos[index];
+    if ((todo.attachments ?? []).length >= TODO_LIMITS.MAX_ATTACHMENTS_PER_TODO) {
+      throw new Error(`할 일 하나당 최대 ${TODO_LIMITS.MAX_ATTACHMENTS_PER_TODO}개까지 첨부할 수 있습니다.`);
+    }
+
+    const bytes = Buffer.from(dataBase64, 'base64');
+    const validated = validateAttachmentUpload(rawFileName, bytes.byteLength);
+    if (!validated.ok) throw new Error(validated.error);
+
+    const totalBytes = this.todos.reduce(
+      (sum, item) => sum + (item.attachments ?? []).reduce((s, a) => s + a.sizeBytes, 0),
+      0
+    );
+    if (totalBytes + bytes.byteLength > TODO_LIMITS.MAX_TOTAL_ATTACHMENT_BYTES_PER_USER) {
+      throw new Error('첨부 파일 저장 용량(30MB)을 초과했습니다.');
+    }
+
+    const id = crypto.randomUUID();
+    const encrypted = encryptAesGcm(this.activeKey!, bytes.toString('base64'));
+    atomicWriteJson(path.join(this.attachmentsDir, `${id}.enc`), encrypted);
+
+    const attachment: TodoAttachment = {
+      id,
+      todoId,
+      fileName: validated.fileName,
+      mimeType: validated.mimeType,
+      sizeBytes: bytes.byteLength,
+      createdAt: new Date().toISOString(),
+    };
+    this.todos[index] = {
+      ...todo,
+      attachments: [attachment, ...(todo.attachments ?? [])],
+      updatedAt: attachment.createdAt,
+    };
+    this.persist();
+    return attachment;
+  }
+
+  readAttachment(todoId: string, attachmentId: string): { meta: TodoAttachment; dataBase64: string } {
+    this.assertUnlocked();
+    const todo = this.todos.find((t) => t.id === todoId);
+    const meta = todo?.attachments?.find((a) => a.id === attachmentId);
+    if (!meta) throw new Error('첨부 파일을 찾을 수 없습니다.');
+
+    const filePath = path.join(this.attachmentsDir, `${path.basename(attachmentId)}.enc`);
+    if (!fs.existsSync(filePath)) throw new Error('암호화된 첨부 파일을 찾을 수 없습니다.');
+
+    const enc = JSON.parse(fs.readFileSync(filePath, 'utf8')) as {
+      ivHex: string;
+      tagHex: string;
+      ciphertextB64: string;
+    };
+    const dataBase64 = decryptAesGcm(this.activeKey!, enc.ivHex, enc.tagHex, enc.ciphertextB64);
+    return { meta, dataBase64 };
+  }
+
+  deleteAttachment(todoId: string, attachmentId: string): boolean {
+    this.assertUnlocked();
+    const index = this.todos.findIndex((t) => t.id === todoId);
+    if (index === -1) return false;
+    const todo = this.todos[index];
+    const before = (todo.attachments ?? []).length;
+    const remaining = (todo.attachments ?? []).filter((a) => a.id !== attachmentId);
+    if (remaining.length === before) return false;
+
+    this.removeAttachmentFile(attachmentId);
+    this.todos[index] = {
+      ...todo,
+      attachments: remaining,
+      updatedAt: new Date().toISOString(),
+    };
+    this.persist();
+    return true;
   }
 
   importTodos(rawBody: unknown): TodoItem[] {
@@ -552,6 +686,7 @@ export class EncryptedDesktopVault {
         reminderAt: input.reminderAt ?? null,
         pinned: Boolean(input.pinned),
         subtasks: input.subtasks ?? [],
+        attachments: [],
         recurrence: input.recurrence ?? 'none',
         sortOrder: 0,
         focusMinutes: input.focusMinutes ?? 0,
