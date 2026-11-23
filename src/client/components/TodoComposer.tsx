@@ -139,7 +139,8 @@ export function TodoComposer({
           ref={inputRef}
           type="text"
           className="composer-input"
-          placeholder="할 일 입력... (예: 운동하기 매일 #건강 내일 @21:00 !높음)"
+          aria-label="할 일 입력"
+          placeholder="할 일 입력 (예: 운동하기 #건강)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           maxLength={200}
